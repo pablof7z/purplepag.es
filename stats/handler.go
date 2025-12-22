@@ -339,7 +339,7 @@ var statsTemplate = `<!DOCTYPE html>
             <div class="kind-grid">
                 {{range .KindStats}}
                 <div class="kind-item">
-                    <span class="kind-name">{{.Name}}</span>
+                    <span class="kind-name">Kind {{.Kind}} - {{.Name}}</span>
                     <span class="kind-count">{{.Count}}</span>
                 </div>
                 {{end}}
