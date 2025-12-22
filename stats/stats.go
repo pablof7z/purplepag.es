@@ -108,15 +108,10 @@ func (s *Stats) GetDiscoveredRelayCount(ctx context.Context) int64 {
 	return count
 }
 
-func (s *Stats) GetStorageStats(ctx context.Context, allowedKinds []int) map[int]int64 {
-	result := make(map[int]int64)
-
-	for _, kind := range allowedKinds {
-		count, err := s.storage.CountEvents(ctx, kind)
-		if err == nil {
-			result[kind] = count
-		}
+func (s *Stats) GetStorageStats(ctx context.Context) map[int]int64 {
+	result, err := s.storage.GetEventCountsByKind(ctx)
+	if err != nil || result == nil {
+		return make(map[int]int64)
 	}
-
 	return result
 }

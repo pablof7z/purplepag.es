@@ -124,6 +124,32 @@ func (s *Storage) CountEvents(ctx context.Context, kind int) (int64, error) {
 	return int64(len(events)), nil
 }
 
+// GetEventCountsByKind returns counts for all kinds stored in the database
+func (s *Storage) GetEventCountsByKind(ctx context.Context) (map[int]int64, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `SELECT kind, COUNT(*) FROM event GROUP BY kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[int]int64)
+	for rows.Next() {
+		var kind int
+		var count int64
+		if err := rows.Scan(&kind, &count); err != nil {
+			return nil, err
+		}
+		result[kind] = count
+	}
+
+	return result, rows.Err()
+}
+
 func (s *Storage) Close() {
 	s.db.Close()
 }

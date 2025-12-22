@@ -289,7 +289,7 @@ func main() {
 	mux.HandleFunc("/rankings", pageHandler.HandleRankings)
 	mux.HandleFunc("/search", pageHandler.HandleSearch)
 	mux.HandleFunc("/profile", pageHandler.HandleProfile)
-	mux.HandleFunc("/stats", statsTracker.HandleStats(cfg.AllowedKinds.ToSlice()))
+	mux.HandleFunc("/stats", statsTracker.HandleStats())
 	mux.HandleFunc("/stats/analytics", analyticsHandler.HandleAnalytics())
 	mux.HandleFunc("/stats/analytics/purge", analyticsHandler.HandlePurge())
 	mux.HandleFunc("/stats/trusted-sync", trustedSyncHandler.HandleTrustedSyncStats())

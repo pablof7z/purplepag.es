@@ -405,17 +405,19 @@ var kindNames = map[int]string{
 	39092: "Media Packs",
 }
 
-func (s *Stats) HandleStats(allowedKinds []int) http.HandlerFunc {
+func (s *Stats) HandleStats() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
 
 		uptime := s.GetUptime()
 		uptimeStr := formatDuration(uptime)
 
-		storageStats := s.GetStorageStats(ctx, allowedKinds)
+		storageStats := s.GetStorageStats(ctx)
 
+		var totalEvents int64
 		kindStats := make([]KindStat, 0)
 		for kind, count := range storageStats {
+			totalEvents += count
 			if count > 0 {
 				name := kindNames[kind]
 				if name == "" {
@@ -435,7 +437,7 @@ func (s *Stats) HandleStats(allowedKinds []int) http.HandlerFunc {
 
 		data := StatsPageData{
 			Uptime:            uptimeStr,
-			TotalEvents:       s.GetTotalEvents(),
+			TotalEvents:       totalEvents,
 			AcceptedEvents:    s.GetAcceptedEvents(),
 			RejectedEvents:    s.GetRejectedEvents(),
 			ActiveConnections: s.GetActiveConnections(),
