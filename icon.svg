@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Hexagonal network node -->
+  <circle cx="256" cy="256" r="240" fill="#1f2937"/>
+
+  <!-- Central hexagon -->
+  <polygon points="256,140 340,188 340,324 256,372 172,324 172,188" fill="none" stroke="#e5e7eb" stroke-width="12"/>
+
+  <!-- Inner profile silhouette -->
+  <circle cx="256" cy="230" r="45" fill="#9ca3af"/>
+  <ellipse cx="256" cy="330" rx="60" ry="40" fill="#9ca3af"/>
+
+  <!-- Outer connection dots -->
+  <circle cx="256" cy="90" r="20" fill="#6b7280"/>
+  <circle cx="400" cy="170" r="20" fill="#6b7280"/>
+  <circle cx="400" cy="340" r="20" fill="#6b7280"/>
+  <circle cx="256" cy="420" r="20" fill="#6b7280"/>
+  <circle cx="112" cy="340" r="20" fill="#6b7280"/>
+  <circle cx="112" cy="170" r="20" fill="#6b7280"/>
+</svg>
