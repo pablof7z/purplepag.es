@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/fiatjaf/eventstore"
@@ -157,4 +158,39 @@ func (s *Storage) Close() {
 // EventStore returns the underlying eventstore.Store for direct access
 func (s *Storage) EventStore() eventstore.Store {
 	return s.db
+}
+
+// GetProfileNames returns a map of pubkey -> display name from kind:0 events
+func (s *Storage) GetProfileNames(ctx context.Context, pubkeys []string) (map[string]string, error) {
+	if len(pubkeys) == 0 {
+		return make(map[string]string), nil
+	}
+
+	events, err := s.QueryEvents(ctx, nostr.Filter{
+		Kinds:   []int{0},
+		Authors: pubkeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	names := make(map[string]string)
+	for _, evt := range events {
+		var profile struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"display_name"`
+		}
+		if err := json.Unmarshal([]byte(evt.Content), &profile); err != nil {
+			continue
+		}
+		name := profile.DisplayName
+		if name == "" {
+			name = profile.Name
+		}
+		if name != "" {
+			names[evt.PubKey] = name
+		}
+	}
+
+	return names, nil
 }

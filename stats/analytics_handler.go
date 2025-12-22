@@ -28,6 +28,7 @@ func NewAnalyticsHandler(tracker *analytics.Tracker, trustAnalyzer *analytics.Tr
 type PubkeyDisplay struct {
 	Pubkey        string
 	ShortPubkey   string
+	Name          string
 	TotalRequests int64
 	LastRequest   string
 	IsTrusted     bool
@@ -97,11 +98,20 @@ func (h *AnalyticsHandler) HandleAnalytics() http.HandlerFunc {
 		}
 
 		topRequested, _ := h.tracker.GetTopRequested(ctx, 50)
+
+		// Fetch profile names for top requested pubkeys
+		topPubkeys := make([]string, len(topRequested))
+		for i, s := range topRequested {
+			topPubkeys[i] = s.Pubkey
+		}
+		profileNames, _ := h.storage.GetProfileNames(ctx, topPubkeys)
+
 		for _, s := range topRequested {
 			inCluster, _ := h.storage.IsPubkeyInBotCluster(ctx, s.Pubkey)
 			data.TopRequested = append(data.TopRequested, PubkeyDisplay{
 				Pubkey:        s.Pubkey,
 				ShortPubkey:   shortPubkey(s.Pubkey),
+				Name:          profileNames[s.Pubkey],
 				TotalRequests: s.TotalRequests,
 				LastRequest:   formatTimeAgo(time.Since(s.LastRequest)),
 				IsTrusted:     h.trustAnalyzer.IsTrusted(s.Pubkey),
@@ -468,6 +478,7 @@ var analyticsTemplate = `<!DOCTYPE html>
                 <thead>
                     <tr>
                         <th>Pubkey</th>
+                        <th>Name</th>
                         <th>Requests</th>
                         <th>Last Requested</th>
                         <th>Status</th>
@@ -477,6 +488,7 @@ var analyticsTemplate = `<!DOCTYPE html>
                     {{range .TopRequested}}
                     <tr>
                         <td class="mono">{{.ShortPubkey}}</td>
+                        <td>{{if .Name}}{{.Name}}{{else}}<span style="color:#52525b">—</span>{{end}}</td>
                         <td class="num">{{.TotalRequests}}</td>
                         <td>{{.LastRequest}}</td>
                         <td>
@@ -492,26 +504,133 @@ var analyticsTemplate = `<!DOCTYPE html>
 
         {{if .TopCooccurring}}
         <div class="section">
-            <h2>Top Co-occurring Pubkey Pairs</h2>
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Pubkey A</th>
-                        <th>Pubkey B</th>
-                        <th>Co-occurrences</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{range .TopCooccurring}}
-                    <tr>
-                        <td class="mono">{{.ShortPubkeyA}}</td>
-                        <td class="mono">{{.ShortPubkeyB}}</td>
-                        <td class="num">{{.Count}}</td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
+            <h2>Pubkey Co-occurrence Graph</h2>
+            <p style="color: #71717a; margin-bottom: 1rem; font-size: 0.9rem;">
+                Nodes represent pubkeys, edges show co-occurrence frequency. Drag to reposition, scroll to zoom.
+            </p>
+            <div id="graph-container" style="width: 100%; height: 600px; background: rgba(0,0,0,0.3); border-radius: 12px; overflow: hidden;"></div>
         </div>
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+        <script>
+        (function() {
+            const cooccurrences = [
+                {{range .TopCooccurring}}
+                {a: "{{.ShortPubkeyA}}", aFull: "{{.PubkeyA}}", b: "{{.ShortPubkeyB}}", bFull: "{{.PubkeyB}}", count: {{.Count}}},
+                {{end}}
+            ];
+
+            const nodeMap = new Map();
+            const links = [];
+
+            cooccurrences.forEach(c => {
+                if (!nodeMap.has(c.a)) {
+                    nodeMap.set(c.a, {id: c.a, full: c.aFull, weight: 0});
+                }
+                if (!nodeMap.has(c.b)) {
+                    nodeMap.set(c.b, {id: c.b, full: c.bFull, weight: 0});
+                }
+                nodeMap.get(c.a).weight += c.count;
+                nodeMap.get(c.b).weight += c.count;
+                links.push({source: c.a, target: c.b, value: c.count});
+            });
+
+            const nodes = Array.from(nodeMap.values());
+            const maxWeight = Math.max(...nodes.map(n => n.weight));
+            const maxLink = Math.max(...links.map(l => l.value));
+
+            const container = document.getElementById('graph-container');
+            const width = container.clientWidth;
+            const height = 600;
+
+            const svg = d3.select('#graph-container')
+                .append('svg')
+                .attr('width', width)
+                .attr('height', height);
+
+            const g = svg.append('g');
+
+            const zoom = d3.zoom()
+                .scaleExtent([0.2, 4])
+                .on('zoom', (event) => g.attr('transform', event.transform));
+
+            svg.call(zoom);
+
+            const simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(links).id(d => d.id).distance(d => 100 - (d.value / maxLink) * 50).strength(d => 0.3 + (d.value / maxLink) * 0.7))
+                .force('charge', d3.forceManyBody().strength(-200))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => 10 + (d.weight / maxWeight) * 20));
+
+            const link = g.append('g')
+                .selectAll('line')
+                .data(links)
+                .join('line')
+                .attr('stroke', '#a78bfa')
+                .attr('stroke-opacity', d => 0.2 + (d.value / maxLink) * 0.6)
+                .attr('stroke-width', d => 1 + (d.value / maxLink) * 4);
+
+            const node = g.append('g')
+                .selectAll('g')
+                .data(nodes)
+                .join('g')
+                .call(d3.drag()
+                    .on('start', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0.3).restart();
+                        d.fx = d.x; d.fy = d.y;
+                    })
+                    .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+                    .on('end', (event, d) => {
+                        if (!event.active) simulation.alphaTarget(0);
+                        d.fx = null; d.fy = null;
+                    }));
+
+            node.append('circle')
+                .attr('r', d => 6 + (d.weight / maxWeight) * 14)
+                .attr('fill', d => {
+                    const t = d.weight / maxWeight;
+                    return d3.interpolateRgb('#8b5cf6', '#e879f9')(t);
+                })
+                .attr('stroke', '#1a1a2e')
+                .attr('stroke-width', 2);
+
+            node.append('text')
+                .text(d => d.id.substring(0, 8))
+                .attr('x', 0)
+                .attr('y', d => -(10 + (d.weight / maxWeight) * 14))
+                .attr('text-anchor', 'middle')
+                .attr('fill', '#a1a1aa')
+                .attr('font-size', '10px')
+                .attr('font-family', 'monospace')
+                .style('pointer-events', 'none');
+
+            const tooltip = d3.select('#graph-container')
+                .append('div')
+                .style('position', 'absolute')
+                .style('background', 'rgba(10, 10, 15, 0.95)')
+                .style('border', '1px solid rgba(167, 139, 250, 0.3)')
+                .style('border-radius', '8px')
+                .style('padding', '8px 12px')
+                .style('font-size', '12px')
+                .style('font-family', 'monospace')
+                .style('color', '#e4e4e7')
+                .style('pointer-events', 'none')
+                .style('opacity', 0)
+                .style('z-index', 100);
+
+            node.on('mouseover', (event, d) => {
+                tooltip.html(d.full + '<br><span style="color:#a78bfa">Weight: ' + d.weight.toLocaleString() + '</span>')
+                    .style('left', (event.offsetX + 10) + 'px')
+                    .style('top', (event.offsetY - 10) + 'px')
+                    .style('opacity', 1);
+            }).on('mouseout', () => tooltip.style('opacity', 0));
+
+            simulation.on('tick', () => {
+                link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+                node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+            });
+        })();
+        </script>
         {{end}}
     </div>
 </body>
