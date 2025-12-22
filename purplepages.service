@@ -1,0 +1,27 @@
+[Unit]
+Description=PurplePages Nostr Relay
+After=network.target
+
+[Service]
+Type=simple
+User=purplepages
+Group=purplepages
+WorkingDirectory=/home/purplepages
+ExecStart=/home/purplepages/purplepages
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=purplepages
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/home/purplepages/data
+
+[Install]
+WantedBy=multi-user.target
