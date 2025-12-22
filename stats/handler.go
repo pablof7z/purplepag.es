@@ -170,17 +170,17 @@ var statsTemplate = `<!DOCTYPE html>
             letter-spacing: -0.01em;
         }
 
-        .kind-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-            gap: 1rem;
+        .kind-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
         }
 
         .kind-item {
             background: rgba(139, 92, 246, 0.04);
             border: 1px solid rgba(167, 139, 250, 0.08);
-            padding: 1.25rem 1.5rem;
-            border-radius: 16px;
+            padding: 0.75rem 1.5rem;
+            border-radius: 12px;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -199,7 +199,7 @@ var statsTemplate = `<!DOCTYPE html>
         }
 
         .kind-count {
-            font-size: 1.5rem;
+            font-size: 1.25rem;
             font-weight: 700;
             color: #a78bfa;
             font-variant-numeric: tabular-nums;
@@ -272,10 +272,6 @@ var statsTemplate = `<!DOCTYPE html>
                 grid-template-columns: 1fr;
             }
 
-            .kind-grid {
-                grid-template-columns: 1fr;
-            }
-
             .section {
                 padding: 1.5rem;
             }
@@ -332,11 +328,19 @@ var statsTemplate = `<!DOCTYPE html>
                     <div class="stat-subvalue">pubkey popularity & spam detection →</div>
                 </div>
             </a>
+
+            <a href="/stats/dashboard" style="text-decoration: none; color: inherit;">
+                <div class="stat-card" style="cursor: pointer;">
+                    <div class="stat-label">Usage Dashboard</div>
+                    <div class="stat-value">View</div>
+                    <div class="stat-subvalue">requests & events served over time →</div>
+                </div>
+            </a>
         </div>
 
         <div class="section">
             <h2>Events by Kind</h2>
-            <div class="kind-grid">
+            <div class="kind-list">
                 {{range .KindStats}}
                 <div class="kind-item">
                     <span class="kind-name">Kind {{.Kind}} - {{.Name}}</span>
@@ -454,6 +458,7 @@ func (s *Stats) HandleStats() http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		if err := tmpl.Execute(w, data); err != nil {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}

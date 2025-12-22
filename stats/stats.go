@@ -52,7 +52,9 @@ func (s *Stats) RecordConnection() {
 func (s *Stats) RecordDisconnection() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.activeConns--
+	if s.activeConns > 0 {
+		s.activeConns--
+	}
 }
 
 func (s *Stats) GetUptime() time.Duration {
@@ -114,4 +116,10 @@ func (s *Stats) GetStorageStats(ctx context.Context) map[int]int64 {
 		return make(map[int]int64)
 	}
 	return result
+}
+
+func (s *Stats) RecordEventsServed(ctx context.Context, ip string, eventsCount int64) {
+	if err := s.storage.RecordDailyStats(ctx, ip, eventsCount); err != nil {
+		// Silently ignore errors for now
+	}
 }

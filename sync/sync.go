@@ -52,21 +52,55 @@ func (s *Syncer) syncRelay(ctx context.Context, relayURL string) error {
 	return nil
 }
 
+const syncLimit = 500
+
 func (s *Syncer) syncKind(ctx context.Context, relay *nostr.Relay, kind int) error {
 	log.Printf("Syncing kind %d from %s...", kind, relay.URL)
 
+	totalEvents := 0
+	totalNew := 0
+	var until *nostr.Timestamp
+
+	for {
+		batchEvents, batchNew, oldestTime, err := s.syncKindBatch(ctx, relay, kind, until)
+		if err != nil {
+			return err
+		}
+
+		totalEvents += batchEvents
+		totalNew += batchNew
+
+		// If we got less than the limit, we've fetched everything
+		if batchEvents < syncLimit {
+			log.Printf("Sync complete for kind %d: received %d events, saved %d new events", kind, totalEvents, totalNew)
+			return nil
+		}
+
+		// Continue from before the oldest event we received
+		if oldestTime != nil {
+			t := nostr.Timestamp(*oldestTime - 1)
+			until = &t
+			log.Printf("Continuing sync for kind %d (fetched %d so far, until %d)...", kind, totalEvents, *until)
+		} else {
+			// No events received, we're done
+			log.Printf("Sync complete for kind %d: received %d events, saved %d new events", kind, totalEvents, totalNew)
+			return nil
+		}
+	}
+}
+
+func (s *Syncer) syncKindBatch(ctx context.Context, relay *nostr.Relay, kind int, until *nostr.Timestamp) (eventCount int, newEvents int, oldestTime *nostr.Timestamp, err error) {
 	filter := nostr.Filter{
 		Kinds: []int{kind},
+		Limit: syncLimit,
+		Until: until,
 	}
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
 	if err != nil {
-		return err
+		return 0, 0, nil, err
 	}
 	defer sub.Unsub()
-
-	eventCount := 0
-	newEvents := 0
 
 	// Idle timeout - resets each time we receive an event
 	idleTimeout := 30 * time.Second
@@ -76,15 +110,19 @@ func (s *Syncer) syncKind(ctx context.Context, relay *nostr.Relay, kind int) err
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return eventCount, newEvents, oldestTime, ctx.Err()
 		case <-timer.C:
-			log.Printf("Sync idle timeout for kind %d: received %d events, saved %d new events", kind, eventCount, newEvents)
-			return nil
+			return eventCount, newEvents, oldestTime, nil
 		case evt := <-sub.Events:
 			if evt == nil {
 				continue
 			}
 			eventCount++
+
+			// Track oldest event for pagination
+			if oldestTime == nil || evt.CreatedAt < *oldestTime {
+				oldestTime = &evt.CreatedAt
+			}
 
 			// Reset idle timer
 			if !timer.Stop() {
@@ -98,13 +136,8 @@ func (s *Syncer) syncKind(ctx context.Context, relay *nostr.Relay, kind int) err
 			if err := s.storage.SaveEvent(ctx, evt); err == nil {
 				newEvents++
 			}
-
-			if eventCount%1000 == 0 {
-				log.Printf("Progress: received %d events, saved %d new (kind %d)", eventCount, newEvents, kind)
-			}
 		case <-sub.EndOfStoredEvents:
-			log.Printf("Sync complete for kind %d: received %d events, saved %d new events", kind, eventCount, newEvents)
-			return nil
+			return eventCount, newEvents, oldestTime, nil
 		}
 	}
 }

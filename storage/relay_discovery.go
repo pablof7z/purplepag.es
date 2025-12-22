@@ -184,6 +184,37 @@ func (s *Storage) GetDiscoveredRelayCount(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+// GetRawRelayURLsFromEvents returns all relay URLs from kind 10002 events (not normalized)
+func (s *Storage) GetRawRelayURLsFromEvents(ctx context.Context) ([]string, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT DISTINCT json_extract(tag.value, '$[1]')
+		FROM event, json_each(event.tags) as tag
+		WHERE event.kind = 10002
+		  AND json_extract(tag.value, '$[0]') = 'r'
+		  AND json_extract(tag.value, '$[1]') IS NOT NULL
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err != nil {
+			return nil, err
+		}
+		urls = append(urls, url)
+	}
+
+	return urls, rows.Err()
+}
+
 func (s *Storage) InitProfileHydrationSchema() error {
 	dbConn := s.getDBConn()
 	if dbConn == nil {

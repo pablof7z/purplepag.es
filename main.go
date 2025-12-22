@@ -90,6 +90,10 @@ func main() {
 		log.Fatalf("Failed to initialize trusted sync schema: %v", err)
 	}
 
+	if err := store.InitDailyStatsSchema(); err != nil {
+		log.Fatalf("Failed to initialize daily stats schema: %v", err)
+	}
+
 	if *importFile != "" {
 		if err := importEventsFromJSONL(store, *importFile); err != nil {
 			log.Fatalf("Failed to import events: %v", err)
@@ -103,6 +107,9 @@ func main() {
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, 10)
 	discovery := relay2.NewDiscovery(store)
+	if err := discovery.BackfillDiscoveredRelays(context.Background()); err != nil {
+		log.Printf("Warning: failed to backfill discovered relays: %v", err)
+	}
 	syncQueue := relay2.NewSyncQueue(store, cfg.SyncKinds)
 
 	relay := khatru.NewRelay()
@@ -167,16 +174,22 @@ func main() {
 			return nil, err
 		}
 
+		ip := khatru.GetIP(ctx)
+
 		ch := make(chan *nostr.Event)
 		go func() {
 			defer close(ch)
+			var count int64
 			for _, evt := range events {
 				select {
 				case ch <- evt:
+					count++
 				case <-ctx.Done():
+					statsTracker.RecordEventsServed(context.Background(), ip, count)
 					return
 				}
 			}
+			statsTracker.RecordEventsServed(context.Background(), ip, count)
 		}()
 
 		return ch, nil
@@ -283,17 +296,36 @@ func main() {
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
 	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
+	dashboardHandler := stats.NewDashboardHandler(store)
+
+	// Password protection middleware for stats pages
+	requireStatsAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if cfg.StatsPassword == "" {
+				next(w, r)
+				return
+			}
+			_, password, ok := r.BasicAuth()
+			if !ok || password != cfg.StatsPassword {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Stats"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", relay.ServeHTTP)
 	mux.HandleFunc("/rankings", pageHandler.HandleRankings)
 	mux.HandleFunc("/search", pageHandler.HandleSearch)
 	mux.HandleFunc("/profile", pageHandler.HandleProfile)
-	mux.HandleFunc("/stats", statsTracker.HandleStats())
-	mux.HandleFunc("/stats/analytics", analyticsHandler.HandleAnalytics())
-	mux.HandleFunc("/stats/analytics/purge", analyticsHandler.HandlePurge())
-	mux.HandleFunc("/stats/trusted-sync", trustedSyncHandler.HandleTrustedSyncStats())
-	mux.HandleFunc("/relays", statsTracker.HandleRelays())
+	mux.HandleFunc("/stats", requireStatsAuth(statsTracker.HandleStats()))
+	mux.HandleFunc("/stats/analytics", requireStatsAuth(analyticsHandler.HandleAnalytics()))
+	mux.HandleFunc("/stats/analytics/purge", requireStatsAuth(analyticsHandler.HandlePurge()))
+	mux.HandleFunc("/stats/trusted-sync", requireStatsAuth(trustedSyncHandler.HandleTrustedSyncStats()))
+	mux.HandleFunc("/stats/dashboard", requireStatsAuth(dashboardHandler.HandleDashboard()))
+	mux.HandleFunc("/relays", requireStatsAuth(statsTracker.HandleRelays()))
 	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "icon.png")
 	})

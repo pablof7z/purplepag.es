@@ -1,0 +1,147 @@
+package storage
+
+import (
+	"context"
+	"time"
+)
+
+type DailyStats struct {
+	Date         string
+	TotalREQs    int64
+	UniqueIPs    int64
+	EventsServed int64
+}
+
+func (s *Storage) InitDailyStatsSchema() error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	schema := `
+	CREATE TABLE IF NOT EXISTS daily_requests (
+		date TEXT NOT NULL,
+		ip TEXT NOT NULL,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		events_served INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (date, ip)
+	);
+	CREATE INDEX IF NOT EXISTS idx_daily_requests_date ON daily_requests(date);
+	`
+
+	_, err := dbConn.Exec(schema)
+	return err
+}
+
+func (s *Storage) RecordDailyStats(ctx context.Context, ip string, eventsServed int64) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	date := time.Now().Format("2006-01-02")
+
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO daily_requests (date, ip, request_count, events_served)
+		VALUES (?, ?, 1, ?)
+		ON CONFLICT(date, ip) DO UPDATE SET
+			request_count = request_count + 1,
+			events_served = events_served + excluded.events_served
+	`, date, ip, eventsServed)
+
+	return err
+}
+
+func (s *Storage) GetDailyStats(ctx context.Context, days int) ([]DailyStats, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT
+			date,
+			SUM(request_count) as total_reqs,
+			COUNT(DISTINCT ip) as unique_ips,
+			SUM(events_served) as events_served
+		FROM daily_requests
+		WHERE date >= date('now', '-' || ? || ' days')
+		GROUP BY date
+		ORDER BY date ASC
+	`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []DailyStats
+	for rows.Next() {
+		var stat DailyStats
+		if err := rows.Scan(&stat.Date, &stat.TotalREQs, &stat.UniqueIPs, &stat.EventsServed); err != nil {
+			return nil, err
+		}
+		results = append(results, stat)
+	}
+
+	return results, rows.Err()
+}
+
+func (s *Storage) GetDailyUniqueStats(ctx context.Context, days int) ([]DailyStats, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT
+			date,
+			COUNT(DISTINCT ip) as total_requests,
+			COUNT(DISTINCT ip) as unique_ips,
+			SUM(events_served) / COUNT(DISTINCT ip) as events_served
+		FROM daily_requests
+		WHERE date >= date('now', '-' || ? || ' days')
+		GROUP BY date
+		ORDER BY date ASC
+	`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []DailyStats
+	for rows.Next() {
+		var stat DailyStats
+		if err := rows.Scan(&stat.Date, &stat.TotalRequests, &stat.UniqueIPs, &stat.EventsServed); err != nil {
+			return nil, err
+		}
+		results = append(results, stat)
+	}
+
+	return results, rows.Err()
+}
+
+func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	today := time.Now().Format("2006-01-02")
+	var stat DailyStats
+	stat.Date = today
+
+	err := dbConn.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(request_count), 0),
+			COALESCE(COUNT(DISTINCT ip), 0),
+			COALESCE(SUM(events_served), 0)
+		FROM daily_requests
+		WHERE date = ?
+	`, today).Scan(&stat.TotalRequests, &stat.UniqueIPs, &stat.EventsServed)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &stat, nil
+}

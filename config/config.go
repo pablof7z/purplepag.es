@@ -156,6 +156,7 @@ type Config struct {
 	ProfileHydration ProfileHydrationConfig `json:"profile_hydration"`
 	TrustedSync      TrustedSyncConfig      `json:"trusted_sync"`
 	Limits           LimitsConfig           `json:"limits"`
+	StatsPassword    string                 `json:"stats_password"`
 }
 
 // DefaultSyncKinds returns the default kinds to sync (NIP-51 lists + profiles)
