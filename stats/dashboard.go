@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"html/template"
+	"net"
 	"net/http"
 
 	"github.com/pablof7z/purplepag.es/storage"
@@ -104,6 +105,21 @@ var dashboardTemplate = `<!DOCTYPE html>
             border-radius: 6px;
         }
         .aggregation-toggle span { font-size: 0.75rem; }
+        .section {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .section h2 { font-size: 0.875rem; font-weight: 600; margin-bottom: 1rem; color: #f0f6fc; }
+        .data-table { width: 100%; border-collapse: collapse; }
+        .data-table th, .data-table td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #21262d; }
+        .data-table th { color: #8b949e; font-weight: 600; font-size: 0.625rem; text-transform: uppercase; }
+        .data-table td { font-size: 0.75rem; }
+        .data-table .num { font-variant-numeric: tabular-nums; color: #58a6ff; font-weight: 600; }
+        .data-table .mono { color: #c9d1d9; }
+        .data-table .ptr { color: #8b949e; font-size: 0.625rem; }
         @media (max-width: 768px) {
             body { padding: 1rem; }
             .stat-value { font-size: 1.5rem; }
@@ -161,6 +177,32 @@ var dashboardTemplate = `<!DOCTYPE html>
                 <canvas id="eventsChart"></canvas>
             </div>
         </div>
+
+        {{if .TopIPs}}
+        <div class="section">
+            <h2>Top 20 IPs by Events Served</h2>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>IP Address</th>
+                        <th>PTR Record</th>
+                        <th>REQs</th>
+                        <th>Events Served</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .TopIPs}}
+                    <tr>
+                        <td class="mono">{{.IP}}</td>
+                        <td class="ptr">{{.PTR}}</td>
+                        <td class="num">{{.TotalREQs}}</td>
+                        <td class="num">{{.EventsServed}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{end}}
     </div>
 
     <script>
@@ -310,12 +352,20 @@ func NewDashboardHandler(storage *storage.Storage) *DashboardHandler {
 	return &DashboardHandler{storage: storage}
 }
 
+type TopIPDisplay struct {
+	IP           string
+	PTR          string
+	TotalREQs    int64
+	EventsServed int64
+}
+
 type DashboardData struct {
 	TodayREQs         int64
 	TodayUniqueIPs    int64
 	TodayEventsServed int64
 	DailyStatsJSON    template.JS
 	HourlyStatsJSON   template.JS
+	TopIPs            []TopIPDisplay
 }
 
 func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
@@ -337,6 +387,29 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 			hourlyStats = []storage.HourlyStats{}
 		}
 
+		topIPs, err := h.storage.GetTopIPs(ctx, 20)
+		if err != nil {
+			topIPs = []storage.TopIP{}
+		}
+
+		topIPDisplays := make([]TopIPDisplay, len(topIPs))
+		for i, ip := range topIPs {
+			ptr := "—"
+			names, err := net.LookupAddr(ip.IP)
+			if err == nil && len(names) > 0 {
+				ptr = names[0]
+				if len(ptr) > 0 && ptr[len(ptr)-1] == '.' {
+					ptr = ptr[:len(ptr)-1]
+				}
+			}
+			topIPDisplays[i] = TopIPDisplay{
+				IP:           ip.IP,
+				PTR:          ptr,
+				TotalREQs:    ip.TotalREQs,
+				EventsServed: ip.EventsServed,
+			}
+		}
+
 		dailyStatsJSON, _ := json.Marshal(dailyStats)
 		hourlyStatsJSON, _ := json.Marshal(hourlyStats)
 
@@ -346,6 +419,7 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 			TodayEventsServed: todayStats.EventsServed,
 			DailyStatsJSON:    template.JS(dailyStatsJSON),
 			HourlyStatsJSON:   template.JS(hourlyStatsJSON),
+			TopIPs:            topIPDisplays,
 		}
 
 		tmpl, err := template.New("dashboard").Parse(dashboardTemplate)

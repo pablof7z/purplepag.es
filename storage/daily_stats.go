@@ -151,6 +151,45 @@ func (s *Storage) GetHourlyStats(ctx context.Context, hours int) ([]HourlyStats,
 	return results, rows.Err()
 }
 
+type TopIP struct {
+	IP           string
+	TotalREQs    int64
+	EventsServed int64
+}
+
+func (s *Storage) GetTopIPs(ctx context.Context, limit int) ([]TopIP, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT
+			ip,
+			SUM(request_count) as total_reqs,
+			SUM(events_served) as events_served
+		FROM daily_requests
+		GROUP BY ip
+		ORDER BY events_served DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []TopIP
+	for rows.Next() {
+		var ip TopIP
+		if err := rows.Scan(&ip.IP, &ip.TotalREQs, &ip.EventsServed); err != nil {
+			return nil, err
+		}
+		results = append(results, ip)
+	}
+
+	return results, rows.Err()
+}
+
 func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
 	dbConn := s.getDBConn()
 	if dbConn == nil {
