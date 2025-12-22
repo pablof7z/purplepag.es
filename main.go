@@ -257,7 +257,14 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
-		time.Sleep(5 * time.Minute)
+		// Run immediately if no trusted pubkeys, otherwise wait 5 minutes
+		if trustAnalyzer.GetTrustedCount() == 0 {
+			log.Println("No trusted pubkeys found, running trust analysis immediately")
+			clusterDetector.Detect(ctx)
+			trustAnalyzer.AnalyzeTrust(ctx)
+		} else {
+			time.Sleep(5 * time.Minute)
+		}
 		for {
 			clusterDetector.Detect(ctx)
 			trustAnalyzer.AnalyzeTrust(ctx)
