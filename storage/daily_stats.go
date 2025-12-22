@@ -86,39 +86,6 @@ func (s *Storage) GetDailyStats(ctx context.Context, days int) ([]DailyStats, er
 	return results, rows.Err()
 }
 
-func (s *Storage) GetDailyUniqueStats(ctx context.Context, days int) ([]DailyStats, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	rows, err := dbConn.QueryContext(ctx, `
-		SELECT
-			date,
-			COUNT(DISTINCT ip) as total_requests,
-			COUNT(DISTINCT ip) as unique_ips,
-			SUM(events_served) / COUNT(DISTINCT ip) as events_served
-		FROM daily_requests
-		WHERE date >= date('now', '-' || ? || ' days')
-		GROUP BY date
-		ORDER BY date ASC
-	`, days)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var results []DailyStats
-	for rows.Next() {
-		var stat DailyStats
-		if err := rows.Scan(&stat.Date, &stat.TotalRequests, &stat.UniqueIPs, &stat.EventsServed); err != nil {
-			return nil, err
-		}
-		results = append(results, stat)
-	}
-
-	return results, rows.Err()
-}
 
 func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
 	dbConn := s.getDBConn()
@@ -137,7 +104,7 @@ func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
 			COALESCE(SUM(events_served), 0)
 		FROM daily_requests
 		WHERE date = ?
-	`, today).Scan(&stat.TotalRequests, &stat.UniqueIPs, &stat.EventsServed)
+	`, today).Scan(&stat.TotalREQs, &stat.UniqueIPs, &stat.EventsServed)
 
 	if err != nil {
 		return nil, err

@@ -201,27 +201,27 @@ var dashboardTemplate = `<!DOCTYPE html>
 
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-label">Today's Requests</div>
-                <div class="stat-value">{{.TodayRequests}}</div>
+                <div class="stat-label">Today's REQs</div>
+                <div class="stat-value">{{.TodayREQs}}</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Today's Unique IPs</div>
                 <div class="stat-value">{{.TodayUniqueIPs}}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Events Served Today</div>
+                <div class="stat-label">Today's Events Served</div>
                 <div class="stat-value">{{.TodayEventsServed}}</div>
             </div>
         </div>
 
         <div class="chart-section">
-            <h2>Requests per Day</h2>
+            <h2>REQs per Day</h2>
             <div class="toggle-container">
-                <button class="toggle-btn active" onclick="toggleRequestsView('total')">Total</button>
-                <button class="toggle-btn" onclick="toggleRequestsView('unique')">Unique IPs</button>
+                <button class="toggle-btn active" onclick="toggleREQsView('total')">Total REQs</button>
+                <button class="toggle-btn" onclick="toggleREQsView('unique')">Unique IPs</button>
             </div>
             <div class="chart-container">
-                <canvas id="requestsChart"></canvas>
+                <canvas id="reqsChart"></canvas>
             </div>
         </div>
 
@@ -338,10 +338,10 @@ func NewDashboardHandler(storage *storage.Storage) *DashboardHandler {
 }
 
 type DashboardData struct {
-	TodayRequests    int64
-	TodayUniqueIPs   int64
+	TodayREQs         int64
+	TodayUniqueIPs    int64
 	TodayEventsServed int64
-	StatsJSON        template.JS
+	StatsJSON         template.JS
 }
 
 func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
@@ -361,10 +361,10 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 		statsJSON, _ := json.Marshal(stats)
 
 		data := DashboardData{
-			TodayRequests:    todayStats.TotalRequests,
-			TodayUniqueIPs:   todayStats.UniqueIPs,
+			TodayREQs:         todayStats.TotalREQs,
+			TodayUniqueIPs:    todayStats.UniqueIPs,
 			TodayEventsServed: todayStats.EventsServed,
-			StatsJSON:        template.JS(statsJSON),
+			StatsJSON:         template.JS(statsJSON),
 		}
 
 		tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
