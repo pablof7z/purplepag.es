@@ -29,11 +29,39 @@ var rejectionTemplate = `<!DOCTYPE html>
             min-height: 100vh;
             padding: 2rem;
             color: #e4e4e7;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 20%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 80%, rgba(217, 70, 239, 0.06) 0%, transparent 50%);
+            animation: drift 30s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        @keyframes drift {
+            0%, 100% { transform: translate(0, 0) rotate(0deg); }
+            33% { transform: translate(-5%, 5%) rotate(5deg); }
+            66% { transform: translate(5%, -5%) rotate(-5deg); }
+        }
+
+        @keyframes shimmer {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
         }
 
         .container {
             max-width: 1400px;
             margin: 0 auto;
+            position: relative;
+            z-index: 1;
         }
 
         .back-link {
@@ -41,6 +69,7 @@ var rejectionTemplate = `<!DOCTYPE html>
             margin-bottom: 2rem;
             color: #a78bfa;
             text-decoration: none;
+            font-weight: 500;
             transition: color 0.2s;
         }
 
@@ -54,18 +83,24 @@ var rejectionTemplate = `<!DOCTYPE html>
         }
 
         h1 {
-            font-size: 2.5rem;
+            font-size: 3rem;
             font-weight: 700;
             margin-bottom: 0.5rem;
             background: linear-gradient(135deg, #a78bfa 0%, #e879f9 50%, #a78bfa 100%);
+            background-size: 200% 100%;
             background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            animation: shimmer 8s ease-in-out infinite;
+            letter-spacing: -0.02em;
         }
 
         .subtitle {
-            color: #a1a1aa;
             font-size: 1rem;
+            font-weight: 500;
+            color: #a1a1aa;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
         }
 
         .stats-grid {
@@ -78,9 +113,34 @@ var rejectionTemplate = `<!DOCTYPE html>
         .stat-card {
             background: linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, rgba(217, 70, 239, 0.02) 100%);
             border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 16px;
-            padding: 1.5rem;
+            border-radius: 24px;
+            padding: 2rem;
             text-align: center;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.4), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: rgba(167, 139, 250, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 20px 40px rgba(139, 92, 246, 0.1);
+        }
+
+        .stat-card:hover::before {
+            opacity: 1;
         }
 
         .stat-label {
@@ -89,57 +149,33 @@ var rejectionTemplate = `<!DOCTYPE html>
             color: #a1a1aa;
             text-transform: uppercase;
             letter-spacing: 0.1em;
-            margin-bottom: 0.5rem;
+            margin-bottom: 1rem;
         }
 
         .stat-value {
-            font-size: 2rem;
+            font-size: 2.5rem;
             font-weight: 700;
-            color: #e4e4e7;
+            line-height: 1;
+            background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
         .section {
             background: linear-gradient(135deg, rgba(139, 92, 246, 0.03) 0%, rgba(217, 70, 239, 0.01) 100%);
             border: 1px solid rgba(167, 139, 250, 0.1);
-            border-radius: 16px;
-            padding: 2rem;
+            border-radius: 24px;
+            padding: 2.5rem;
             margin-bottom: 2rem;
         }
 
         h2 {
-            font-size: 1.25rem;
-            font-weight: 600;
-            margin-bottom: 1.5rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 2rem;
             color: #e4e4e7;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 0.5rem;
-            margin-bottom: 1.5rem;
-            border-bottom: 1px solid rgba(167, 139, 250, 0.2);
-            padding-bottom: 0.5rem;
-        }
-
-        .tab {
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
-            cursor: pointer;
-            color: #a1a1aa;
-            transition: all 0.2s;
-            border: none;
-            background: none;
-            font-size: 0.9rem;
-        }
-
-        .tab:hover {
-            color: #e4e4e7;
-            background: rgba(167, 139, 250, 0.1);
-        }
-
-        .tab.active {
-            color: #a78bfa;
-            background: rgba(167, 139, 250, 0.15);
+            letter-spacing: -0.01em;
         }
 
         table {
@@ -246,11 +282,11 @@ var rejectionTemplate = `<!DOCTYPE html>
 
         @media (max-width: 768px) {
             body {
-                padding: 1rem;
+                padding: 1.5rem;
             }
 
             h1 {
-                font-size: 1.75rem;
+                font-size: 2rem;
             }
 
             .stats-grid {
@@ -258,7 +294,11 @@ var rejectionTemplate = `<!DOCTYPE html>
             }
 
             .section {
-                padding: 1rem;
+                padding: 1.5rem;
+            }
+
+            .stat-value {
+                font-size: 1.75rem;
             }
 
             table {
