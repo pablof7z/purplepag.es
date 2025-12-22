@@ -36,7 +36,56 @@ func New(backend, path string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
-	return &Storage{db: db}, nil
+	storage := &Storage{db: db}
+
+	// Apply SQLite optimizations if using SQLite
+	if backend == "sqlite3" {
+		if err := storage.ApplySQLiteOptimizations(); err != nil {
+			return nil, fmt.Errorf("failed to apply SQLite optimizations: %w", err)
+		}
+	}
+
+	return storage, nil
+}
+
+func (s *Storage) ApplySQLiteOptimizations() error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	optimizations := []string{
+		// Enable WAL mode for better concurrency
+		"PRAGMA journal_mode=WAL",
+		// Reduce fsync frequency (faster, but slightly less durable)
+		"PRAGMA synchronous=NORMAL",
+		// Use 64MB cache (negative value = KB)
+		"PRAGMA cache_size=-64000",
+		// Store temp tables in memory
+		"PRAGMA temp_store=MEMORY",
+		// Use memory-mapped I/O for reads (256MB)
+		"PRAGMA mmap_size=268435456",
+	}
+
+	for _, pragma := range optimizations {
+		if _, err := dbConn.Exec(pragma); err != nil {
+			return fmt.Errorf("failed to execute %s: %w", pragma, err)
+		}
+	}
+
+	// Add strategic indexes for hydrator queries
+	indexes := []string{
+		// Composite index for kind+pubkey lookups (used by CheckPubkeyEventKinds)
+		"CREATE INDEX IF NOT EXISTS idx_kind_pubkey ON event(kind, pubkey)",
+	}
+
+	for _, indexSQL := range indexes {
+		if _, err := dbConn.Exec(indexSQL); err != nil {
+			return fmt.Errorf("failed to create index: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Storage) SaveEvent(ctx context.Context, evt *nostr.Event) error {

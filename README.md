@@ -16,13 +16,23 @@ A specialized Nostr relay built with [khatru](https://khatru.nostr.technology/) 
   - Events contributed by each relay
   - Connection statistics
 
-- **Negentropy Support**: Built-in support for efficient event synchronization using negentropy protocol
+- **Profile Hydration**: Automatically fetches missing profiles for popular users (configurable follower threshold)
+
+- **REQ Analytics & Spam Detection**:
+  - Tracks pubkey request popularity and co-occurrence patterns
+  - Detects bot clusters via follow graph analysis (Tarjan's SCC algorithm)
+  - Trust propagation from largest connected component
+  - Manual spam purging with confirmation
 
 - **SQLite3 Storage**: Fast, reliable database storage with no content size limits
 
-- **Beautiful Statistics Dashboard**:
-  - `/stats` - View relay statistics, event counts, and discovered relays
-  - `/relays` - Detailed view of all discovered relays with success rates and contributions
+- **Statistics Dashboard**:
+  - `/stats` - Relay statistics, event counts, discovered relays
+  - `/stats/analytics` - REQ analytics, bot clusters, spam candidates
+  - `/relays` - Detailed relay health and contribution stats
+  - `/rankings` - Top profiles by follower count
+  - `/search` - Search for profiles
+  - `/profile` - View individual profiles
 
 - **NIP-11 Relay Information**: Fully configurable relay metadata
 
@@ -50,11 +60,11 @@ The relay is configured via `config.json`:
   },
   "server": {
     "host": "0.0.0.0",
-    "port": 3334
+    "port": 3335
   },
   "storage": {
-    "backend": "lmdb",
-    "path": "./data"
+    "backend": "sqlite3",
+    "path": "./data/purplepages.db"
   },
   "allowed_kinds": [0, 3, 10000, 10001, ...],
   "sync": {
@@ -64,6 +74,13 @@ The relay is configured via `config.json`:
       "wss://nos.lol",
       "wss://relay.nostr.band"
     ]
+  },
+  "profile_hydration": {
+    "enabled": true,
+    "min_followers": 10,
+    "interval_minutes": 5,
+    "retry_after_hours": 24,
+    "batch_size": 100
   }
 }
 ```
@@ -78,6 +95,8 @@ The relay is configured via `config.json`:
 - `allowed_kinds`: Array of event kinds to accept
 - `sync.enabled`: Enable/disable automatic sync on startup
 - `sync.relays`: Array of relay URLs to sync from initially
+- `profile_hydration.enabled`: Enable automatic profile fetching
+- `profile_hydration.min_followers`: Minimum followers before hydrating a profile
 
 ## Usage
 
@@ -85,69 +104,59 @@ The relay is configured via `config.json`:
 ./purplepages
 ```
 
-The relay will:
-1. Load configuration from `config.json`
-2. Initialize LMDB storage
-3. Start syncing events from configured relays (if enabled)
-4. Begin accepting WebSocket connections
+### Command Line Options
 
-## Supported Event Kinds
-
-### Standard Profile & Social Graph
-- **Kind 0**: User metadata (profiles)
-- **Kind 3**: Contact lists (follows)
-
-### NIP-51 Lists (Replaceable)
-- **Kind 10000**: Mute list
-- **Kind 10001**: Pinned notes
-- **Kind 10002**: Read/write relays
-- **Kind 10003**: Bookmarks
-- **Kind 10004**: Communities
-- **Kind 10005**: Public chats
-- **Kind 10006**: Blocked relays
-- **Kind 10007**: Search relays
-- **Kind 10009**: Simple groups
-- **Kind 10012**: Relay feeds
-- **Kind 10015**: Interests
-- **Kind 10020**: Media follows
-- **Kind 10030**: Emojis
-- **Kind 10050**: DM relays
-- **Kind 10101**: Good wiki authors
-- **Kind 10102**: Good wiki relays
-
-### NIP-51 Sets (Parameterized Replaceable)
-- **Kind 30000**: Follow sets
-- **Kind 30002**: Relay sets
-- **Kind 30003**: Bookmark sets
-- **Kind 30004**: Curation sets (articles)
-- **Kind 30005**: Curation sets (videos)
-- **Kind 30007**: Kind mute sets
-- **Kind 30015**: Interest sets
-- **Kind 30030**: Emoji sets
-- **Kind 30063**: Release artifact sets
-- **Kind 30267**: App curation sets
-- **Kind 31924**: Calendar events
-- **Kind 39089**: Starter packs
-- **Kind 39092**: Media starter packs
+- `--port <port>`: Override port from config
+- `--import <file.jsonl>`: Import events from JSONL file and exit
+- `--test-hydrator`: Run profile hydrator test and exit
 
 ## Architecture
 
 ```
-├── main.go              # Entry point, relay initialization
+├── main.go                 # Entry point, relay initialization
 ├── config/
-│   └── config.go       # Configuration loading and validation
+│   └── config.go           # Configuration loading and validation
 ├── storage/
-│   └── storage.go      # LMDB storage backend wrapper
+│   ├── storage.go          # Storage backend abstraction
+│   ├── relay_discovery.go  # Relay discovery & profile hydration tables
+│   └── analytics.go        # REQ analytics & spam detection tables
+├── analytics/
+│   ├── tracker.go          # REQ event tracking with periodic flush
+│   ├── cluster.go          # Bot cluster detection (Tarjan's SCC)
+│   └── trust.go            # Trust propagation & spam identification
+├── relay/
+│   ├── discovery.go        # Relay URL extraction from kind:10002
+│   ├── queue.go            # Relay sync queue
+│   ├── hydrator.go         # Profile hydration system
+│   └── normalize.go        # Relay URL normalization
+├── stats/
+│   ├── stats.go            # In-memory statistics tracking
+│   ├── handler.go          # /stats endpoint
+│   ├── relays_handler.go   # /relays endpoint
+│   └── analytics_handler.go # /stats/analytics endpoint
+├── pages/
+│   └── pages.go            # /rankings, /search, /profile endpoints
 └── sync/
-    └── sync.go         # Negentropy-based event synchronization
+    └── sync.go             # Initial sync from configured relays
 ```
+
+## Spam Detection
+
+The relay includes a spam detection system based on follow graph analysis:
+
+1. **Seed trusted set**: Largest connected component of the follow graph
+2. **Trust propagation**: Pubkeys followed by 10+ trusted users become trusted
+3. **Bot cluster detection**: Strongly connected components with high internal density (>70%) and low external connections (<20%)
+4. **Spam candidates**: Untrusted pubkeys in bot clusters or never requested by anyone
+
+View and purge spam at `/stats/analytics`.
 
 ## Dependencies
 
 - [khatru](https://github.com/fiatjaf/khatru) - Nostr relay framework
 - [go-nostr](https://github.com/nbd-wtf/go-nostr) - Nostr protocol implementation
-- [go-negentropy](https://github.com/illuzen/go-negentropy) - Negentropy set reconciliation
-- [eventstore](https://github.com/fiatjaf/eventstore) - Event storage abstraction with LMDB backend
+- [eventstore](https://github.com/fiatjaf/eventstore) - Event storage abstraction
+- [sqlx](https://github.com/jmoiron/sqlx) - SQL extensions for Go
 
 ## License
 

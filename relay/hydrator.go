@@ -104,8 +104,8 @@ func (h *ProfileHydrator) findPubkeysNeedingHydration(ctx context.Context) []Pub
 
 	retryThreshold := time.Now().Add(-time.Duration(h.retryAfterHours) * time.Hour).Unix()
 
-	var needs []PubkeyNeed
-
+	// Collect all pubkeys that meet follower threshold
+	var candidatePubkeys []string
 	for pubkey, count := range followerCounts {
 		if count < h.minFollowers {
 			continue
@@ -120,32 +120,30 @@ func (h *ProfileHydrator) findPubkeysNeedingHydration(ctx context.Context) []Pub
 			}
 		}
 
-		// Check what we currently have
-		need := PubkeyNeed{Pubkey: pubkey}
+		candidatePubkeys = append(candidatePubkeys, pubkey)
+	}
 
-		// Check kind 0
-		k0Events, _ := h.storage.QueryEvents(ctx, nostr.Filter{
-			Kinds:   []int{0},
-			Authors: []string{pubkey},
-			Limit:   1,
-		})
-		need.NeedKind0 = len(k0Events) == 0
+	if len(candidatePubkeys) == 0 {
+		return nil
+	}
 
-		// Check kind 3
-		k3Events, _ := h.storage.QueryEvents(ctx, nostr.Filter{
-			Kinds:   []int{3},
-			Authors: []string{pubkey},
-			Limit:   1,
-		})
-		need.NeedKind3 = len(k3Events) == 0
+	// Batch check what events we have for all candidates (single query instead of N*3 queries)
+	eventKinds, err := h.storage.CheckPubkeyEventKinds(ctx, candidatePubkeys)
+	if err != nil {
+		log.Printf("Profile hydrator: failed to check event kinds: %v", err)
+		return nil
+	}
 
-		// Check kind 10002
-		k10002Events, _ := h.storage.QueryEvents(ctx, nostr.Filter{
-			Kinds:   []int{10002},
-			Authors: []string{pubkey},
-			Limit:   1,
-		})
-		need.NeedKind10002 = len(k10002Events) == 0
+	// Build needs list
+	var needs []PubkeyNeed
+	for _, pubkey := range candidatePubkeys {
+		kinds := eventKinds[pubkey]
+		need := PubkeyNeed{
+			Pubkey:        pubkey,
+			NeedKind0:     !kinds.HasKind0,
+			NeedKind3:     !kinds.HasKind3,
+			NeedKind10002: !kinds.HasKind10002,
+		}
 
 		// If we need any of them, add to list
 		if need.NeedKind0 || need.NeedKind3 || need.NeedKind10002 {

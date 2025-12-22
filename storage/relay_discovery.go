@@ -378,3 +378,76 @@ func (s *Storage) GetFollowerCounts(ctx context.Context, minFollowers int) (map[
 
 	return followerCounts, rows.Err()
 }
+
+type PubkeyEventKinds struct {
+	Pubkey        string
+	HasKind0      bool
+	HasKind3      bool
+	HasKind10002  bool
+}
+
+func (s *Storage) CheckPubkeyEventKinds(ctx context.Context, pubkeys []string) (map[string]PubkeyEventKinds, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	if len(pubkeys) == 0 {
+		return make(map[string]PubkeyEventKinds), nil
+	}
+
+	// Build query with placeholders for all pubkeys
+	placeholders := make([]interface{}, len(pubkeys))
+	for i, pk := range pubkeys {
+		placeholders[i] = pk
+	}
+
+	// Single query that checks all three kinds for all pubkeys
+	query := `
+		SELECT
+			pubkey,
+			MAX(CASE WHEN kind = 0 THEN 1 ELSE 0 END) as has_kind_0,
+			MAX(CASE WHEN kind = 3 THEN 1 ELSE 0 END) as has_kind_3,
+			MAX(CASE WHEN kind = 10002 THEN 1 ELSE 0 END) as has_kind_10002
+		FROM event
+		WHERE pubkey IN (?` + string(make([]byte, len(pubkeys)-1)) + `)
+		  AND kind IN (0, 3, 10002)
+		GROUP BY pubkey
+	`
+
+	// Replace placeholders
+	query = "SELECT pubkey, MAX(CASE WHEN kind = 0 THEN 1 ELSE 0 END) as has_kind_0, MAX(CASE WHEN kind = 3 THEN 1 ELSE 0 END) as has_kind_3, MAX(CASE WHEN kind = 10002 THEN 1 ELSE 0 END) as has_kind_10002 FROM event WHERE pubkey IN (?"
+	for i := 1; i < len(pubkeys); i++ {
+		query += ",?"
+	}
+	query += ") AND kind IN (0, 3, 10002) GROUP BY pubkey"
+
+	rows, err := dbConn.QueryContext(ctx, query, placeholders...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Initialize result map with all pubkeys (default: no events)
+	result := make(map[string]PubkeyEventKinds)
+	for _, pk := range pubkeys {
+		result[pk] = PubkeyEventKinds{Pubkey: pk}
+	}
+
+	// Update with actual data
+	for rows.Next() {
+		var pubkey string
+		var hasK0, hasK3, hasK10002 int
+		if err := rows.Scan(&pubkey, &hasK0, &hasK3, &hasK10002); err != nil {
+			return nil, err
+		}
+		result[pubkey] = PubkeyEventKinds{
+			Pubkey:       pubkey,
+			HasKind0:     hasK0 == 1,
+			HasKind3:     hasK3 == 1,
+			HasKind10002: hasK10002 == 1,
+		}
+	}
+
+	return result, rows.Err()
+}

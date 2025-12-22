@@ -29,6 +29,7 @@ func main() {
 	port := flag.Int("port", 0, "Override port from config (use 9999 for sync-only test mode)")
 	importFile := flag.String("import", "", "Import events from JSONL file and exit")
 	testHydrator := flag.Bool("test-hydrator", false, "Run profile hydrator once and show results")
+	benchmarkHydrator := flag.Bool("benchmark-hydrator", false, "Benchmark hydrator performance on production DB")
 	flag.Parse()
 
 	cfg, err := config.Load("config.json")
@@ -40,6 +41,14 @@ func main() {
 	if *testHydrator {
 		if err := runHydratorTestWithCopy(cfg); err != nil {
 			log.Fatalf("Hydrator test failed: %v", err)
+		}
+		os.Exit(0)
+	}
+
+	// Handle benchmark mode
+	if *benchmarkHydrator {
+		if err := runHydratorBenchmark(cfg); err != nil {
+			log.Fatalf("Benchmark failed: %v", err)
 		}
 		os.Exit(0)
 	}
@@ -419,6 +428,69 @@ func runHydratorTestWithCopy(cfg *config.Config) error {
 	return runHydratorTest(testStore, cfg, false)
 }
 
+func runHydratorBenchmark(cfg *config.Config) error {
+	log.Println("=== Hydrator Performance Benchmark ===")
+	log.Println()
+
+	// Open production database (read-only operations)
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Get database stats
+	kind0Count, _ := store.CountEvents(ctx, 0)
+	kind3Count, _ := store.CountEvents(ctx, 3)
+	kind10002Count, _ := store.CountEvents(ctx, 10002)
+
+	log.Printf("Database size:")
+	log.Printf("  Kind 0 (profiles): %d", kind0Count)
+	log.Printf("  Kind 3 (contacts): %d", kind3Count)
+	log.Printf("  Kind 10002 (relays): %d", kind10002Count)
+	log.Println()
+
+	// Benchmark follower counting query
+	log.Println("Benchmarking follower counting query...")
+	log.Printf("  Min followers: %d", cfg.ProfileHydration.MinFollowers)
+
+	start := time.Now()
+	followerCounts, err := store.GetFollowerCounts(ctx, cfg.ProfileHydration.MinFollowers)
+	duration := time.Since(start)
+
+	if err != nil {
+		return fmt.Errorf("follower counting failed: %w", err)
+	}
+
+	log.Printf("  ✓ Completed in %v", duration)
+	log.Printf("  Found %d pubkeys with %d+ followers", len(followerCounts), cfg.ProfileHydration.MinFollowers)
+	log.Println()
+
+	// Benchmark full analysis (what the hydrator does)
+	log.Println("Benchmarking full hydrator analysis...")
+
+	hydrator := relay2.NewProfileHydrator(
+		store,
+		cfg.Sync.Relays,
+		cfg.ProfileHydration.MinFollowers,
+		cfg.ProfileHydration.RetryAfterHours,
+		cfg.ProfileHydration.BatchSize,
+	)
+
+	start = time.Now()
+	pubkeysToFetch := hydrator.FindPubkeysNeedingHydration(ctx)
+	duration = time.Since(start)
+
+	log.Printf("  ✓ Completed in %v", duration)
+	log.Printf("  Found %d pubkeys needing hydration", len(pubkeysToFetch))
+	log.Println()
+
+	log.Println("=== Benchmark Complete ===")
+	return nil
+}
+
 func copyFile(src, dst string) error {
 	input, err := os.ReadFile(src)
 	if err != nil {
@@ -472,7 +544,10 @@ func runHydratorTest(store *storage.Storage, cfg *config.Config, skipFetch bool)
 
 	// First, show what would be fetched
 	log.Println("Analyzing which pubkeys need hydration...")
+	analysisStart := time.Now()
 	pubkeysToFetch := hydrator.FindPubkeysNeedingHydration(ctx)
+	analysisDuration := time.Since(analysisStart)
+	log.Printf("Analysis completed in %v", analysisDuration)
 
 	if len(pubkeysToFetch) == 0 {
 		log.Println("No pubkeys need hydration at this time.")
