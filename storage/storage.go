@@ -76,6 +76,8 @@ func (s *Storage) ApplySQLiteOptimizations() error {
 
 	// Add strategic indexes for hydrator queries
 	indexes := []string{
+		// Index for counting events by kind (used by stats page)
+		"CREATE INDEX IF NOT EXISTS idx_event_kind ON event(kind)",
 		// Composite index for kind+pubkey lookups (used by CheckPubkeyEventKinds)
 		"CREATE INDEX IF NOT EXISTS idx_kind_pubkey ON event(kind, pubkey)",
 		// Index for profile searches (kind 0 events sorted by created_at)
@@ -92,7 +94,36 @@ func (s *Storage) ApplySQLiteOptimizations() error {
 }
 
 func (s *Storage) SaveEvent(ctx context.Context, evt *nostr.Event) error {
+	// Archive old version for replaceable events before saving
+	if isReplaceableKind(evt.Kind) {
+		s.archiveOldVersion(ctx, evt)
+	}
 	return s.db.SaveEvent(ctx, evt)
+}
+
+// isReplaceableKind returns true for replaceable event kinds (NIP-01)
+func isReplaceableKind(kind int) bool {
+	// Kind 0 (profile), Kind 3 (contacts), 10000-19999 (replaceable)
+	return kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
+}
+
+// archiveOldVersion archives the current version before replacement
+func (s *Storage) archiveOldVersion(ctx context.Context, newEvt *nostr.Event) {
+	// Query for existing event
+	existing, err := s.QueryEvents(ctx, nostr.Filter{
+		Kinds:   []int{newEvt.Kind},
+		Authors: []string{newEvt.PubKey},
+		Limit:   1,
+	})
+	if err != nil || len(existing) == 0 {
+		return
+	}
+
+	oldEvt := existing[0]
+	// Only archive if old event is different and older
+	if oldEvt.ID != newEvt.ID && oldEvt.CreatedAt < newEvt.CreatedAt {
+		s.ArchiveEvent(ctx, oldEvt)
+	}
 }
 
 func (s *Storage) QueryEvents(ctx context.Context, filter nostr.Filter) ([]*nostr.Event, error) {

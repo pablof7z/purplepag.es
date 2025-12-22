@@ -94,6 +94,10 @@ func main() {
 		log.Fatalf("Failed to initialize daily stats schema: %v", err)
 	}
 
+	if err := store.InitEventHistorySchema(); err != nil {
+		log.Fatalf("Failed to initialize event history schema: %v", err)
+	}
+
 	if *importFile != "" {
 		if err := importEventsFromJSONL(store, *importFile); err != nil {
 			log.Fatalf("Failed to import events: %v", err)
@@ -306,6 +310,7 @@ func main() {
 	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 	dashboardHandler := stats.NewDashboardHandler(store)
 	rejectionHandler := stats.NewRejectionHandler(store)
+	timecapsuleHandler := pages.NewTimecapsuleHandler(store)
 
 	// Password protection middleware for stats pages
 	requireStatsAuth := func(next http.HandlerFunc) http.HandlerFunc {
@@ -329,6 +334,7 @@ func main() {
 	mux.HandleFunc("/rankings", pageHandler.HandleRankings)
 	mux.HandleFunc("/search", pageHandler.HandleSearch)
 	mux.HandleFunc("/profile", pageHandler.HandleProfile)
+	mux.HandleFunc("/timecapsule", timecapsuleHandler.HandleTimecapsule())
 	mux.HandleFunc("/stats", requireStatsAuth(statsTracker.HandleStats()))
 	mux.HandleFunc("/stats/analytics", requireStatsAuth(analyticsHandler.HandleAnalytics()))
 	mux.HandleFunc("/stats/analytics/purge", requireStatsAuth(analyticsHandler.HandlePurge()))
