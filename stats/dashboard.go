@@ -183,6 +183,16 @@ var dashboardTemplate = `<!DOCTYPE html>
             background: rgba(139, 92, 246, 0.2);
         }
 
+        .aggregation-toggle {
+            display: flex;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding: 1rem;
+            background: rgba(139, 92, 246, 0.05);
+            border: 1px solid rgba(167, 139, 250, 0.15);
+            border-radius: 12px;
+        }
+
         @media (max-width: 768px) {
             body { padding: 1rem; }
             h1 { font-size: 2rem; }
@@ -214,8 +224,14 @@ var dashboardTemplate = `<!DOCTYPE html>
             </div>
         </div>
 
+        <div class="aggregation-toggle">
+            <span style="color: #71717a; margin-right: 1rem;">Aggregation:</span>
+            <button class="toggle-btn active" onclick="setAggregation('day')">Daily (30d)</button>
+            <button class="toggle-btn" onclick="setAggregation('hour')">Hourly (72h)</button>
+        </div>
+
         <div class="chart-section">
-            <h2>REQs per Day</h2>
+            <h2 id="reqsTitle">REQs per Day</h2>
             <div class="toggle-container">
                 <button class="toggle-btn active" onclick="toggleREQsView('total')">Total REQs</button>
                 <button class="toggle-btn" onclick="toggleREQsView('unique')">Unique IPs</button>
@@ -226,7 +242,7 @@ var dashboardTemplate = `<!DOCTYPE html>
         </div>
 
         <div class="chart-section">
-            <h2>Events Served per Day</h2>
+            <h2 id="eventsTitle">Events Served per Day</h2>
             <div class="toggle-container">
                 <button class="toggle-btn active" onclick="toggleEventsView('total')">Total</button>
                 <button class="toggle-btn" onclick="toggleEventsView('avg')">Avg per IP</button>
@@ -238,12 +254,33 @@ var dashboardTemplate = `<!DOCTYPE html>
     </div>
 
     <script>
-        const statsData = {{.StatsJSON}};
-        const labels = statsData.map(s => s.Date);
-        const totalREQs = statsData.map(s => s.TotalREQs);
-        const uniqueIPs = statsData.map(s => s.UniqueIPs);
-        const eventsServed = statsData.map(s => s.EventsServed);
-        const avgEventsPerREQ = statsData.map(s => s.TotalREQs > 0 ? Math.round(s.EventsServed / s.TotalREQs) : 0);
+        const dailyData = {{.DailyStatsJSON}};
+        const hourlyData = {{.HourlyStatsJSON}};
+
+        let currentAggregation = 'day';
+        let currentREQsView = 'total';
+        let currentEventsView = 'total';
+
+        function getDataForAggregation(agg) {
+            if (agg === 'hour') {
+                return {
+                    labels: hourlyData.map(s => s.Hour ? s.Hour.substring(5) : ''), // "01-15 14" format
+                    totalREQs: hourlyData.map(s => s.TotalREQs),
+                    uniqueIPs: hourlyData.map(s => s.UniqueIPs),
+                    eventsServed: hourlyData.map(s => s.EventsServed),
+                    avgEventsPerREQ: hourlyData.map(s => s.TotalREQs > 0 ? Math.round(s.EventsServed / s.TotalREQs) : 0)
+                };
+            }
+            return {
+                labels: dailyData.map(s => s.Date),
+                totalREQs: dailyData.map(s => s.TotalREQs),
+                uniqueIPs: dailyData.map(s => s.UniqueIPs),
+                eventsServed: dailyData.map(s => s.EventsServed),
+                avgEventsPerREQ: dailyData.map(s => s.TotalREQs > 0 ? Math.round(s.EventsServed / s.TotalREQs) : 0)
+            };
+        }
+
+        let data = getDataForAggregation('day');
 
         const chartOptions = {
             responsive: true,
@@ -254,7 +291,7 @@ var dashboardTemplate = `<!DOCTYPE html>
             scales: {
                 x: {
                     grid: { color: 'rgba(167, 139, 250, 0.1)' },
-                    ticks: { color: '#a1a1aa' }
+                    ticks: { color: '#a1a1aa', maxRotation: 45, minRotation: 45 }
                 },
                 y: {
                     grid: { color: 'rgba(167, 139, 250, 0.1)' },
@@ -268,10 +305,10 @@ var dashboardTemplate = `<!DOCTYPE html>
         const reqsChart = new Chart(reqsCtx, {
             type: 'line',
             data: {
-                labels: labels,
+                labels: data.labels,
                 datasets: [{
                     label: 'Total REQs',
-                    data: totalREQs,
+                    data: data.totalREQs,
                     borderColor: '#a78bfa',
                     backgroundColor: 'rgba(167, 139, 250, 0.1)',
                     fill: true,
@@ -285,10 +322,10 @@ var dashboardTemplate = `<!DOCTYPE html>
         const eventsChart = new Chart(eventsCtx, {
             type: 'line',
             data: {
-                labels: labels,
+                labels: data.labels,
                 datasets: [{
                     label: 'Events Served',
-                    data: eventsServed,
+                    data: data.eventsServed,
                     borderColor: '#e879f9',
                     backgroundColor: 'rgba(232, 121, 249, 0.1)',
                     fill: true,
@@ -298,32 +335,58 @@ var dashboardTemplate = `<!DOCTYPE html>
             options: chartOptions
         });
 
-        function toggleREQsView(view) {
-            document.querySelectorAll('.chart-section:nth-child(4) .toggle-btn').forEach(btn => btn.classList.remove('active'));
+        function setAggregation(agg) {
+            currentAggregation = agg;
+            document.querySelectorAll('.aggregation-toggle .toggle-btn').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
 
-            if (view === 'total') {
-                reqsChart.data.datasets[0].data = totalREQs;
+            data = getDataForAggregation(agg);
+            const timeLabel = agg === 'hour' ? 'Hour' : 'Day';
+
+            document.getElementById('reqsTitle').textContent = 'REQs per ' + timeLabel;
+            document.getElementById('eventsTitle').textContent = 'Events Served per ' + timeLabel;
+
+            reqsChart.data.labels = data.labels;
+            eventsChart.data.labels = data.labels;
+
+            updateREQsChart();
+            updateEventsChart();
+        }
+
+        function updateREQsChart() {
+            if (currentREQsView === 'total') {
+                reqsChart.data.datasets[0].data = data.totalREQs;
                 reqsChart.data.datasets[0].label = 'Total REQs';
             } else {
-                reqsChart.data.datasets[0].data = uniqueIPs;
+                reqsChart.data.datasets[0].data = data.uniqueIPs;
                 reqsChart.data.datasets[0].label = 'Unique IPs';
             }
             reqsChart.update();
         }
 
-        function toggleEventsView(view) {
-            document.querySelectorAll('.chart-section:nth-child(5) .toggle-btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-
-            if (view === 'total') {
-                eventsChart.data.datasets[0].data = eventsServed;
+        function updateEventsChart() {
+            if (currentEventsView === 'total') {
+                eventsChart.data.datasets[0].data = data.eventsServed;
                 eventsChart.data.datasets[0].label = 'Events Served';
             } else {
-                eventsChart.data.datasets[0].data = avgEventsPerREQ;
+                eventsChart.data.datasets[0].data = data.avgEventsPerREQ;
                 eventsChart.data.datasets[0].label = 'Avg Events per REQ';
             }
             eventsChart.update();
+        }
+
+        function toggleREQsView(view) {
+            currentREQsView = view;
+            document.querySelectorAll('.chart-section:nth-child(3) .toggle-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            updateREQsChart();
+        }
+
+        function toggleEventsView(view) {
+            currentEventsView = view;
+            document.querySelectorAll('.chart-section:nth-child(4) .toggle-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            updateEventsChart();
         }
     </script>
 </body>
@@ -341,7 +404,8 @@ type DashboardData struct {
 	TodayREQs         int64
 	TodayUniqueIPs    int64
 	TodayEventsServed int64
-	StatsJSON         template.JS
+	DailyStatsJSON    template.JS
+	HourlyStatsJSON   template.JS
 }
 
 func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
@@ -353,18 +417,25 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 			todayStats = &storage.DailyStats{}
 		}
 
-		stats, err := h.storage.GetDailyStats(ctx, 30)
+		dailyStats, err := h.storage.GetDailyStats(ctx, 30)
 		if err != nil {
-			stats = []storage.DailyStats{}
+			dailyStats = []storage.DailyStats{}
 		}
 
-		statsJSON, _ := json.Marshal(stats)
+		hourlyStats, err := h.storage.GetHourlyStats(ctx, 72) // Last 3 days of hourly data
+		if err != nil {
+			hourlyStats = []storage.HourlyStats{}
+		}
+
+		dailyStatsJSON, _ := json.Marshal(dailyStats)
+		hourlyStatsJSON, _ := json.Marshal(hourlyStats)
 
 		data := DashboardData{
 			TodayREQs:         todayStats.TotalREQs,
 			TodayUniqueIPs:    todayStats.UniqueIPs,
 			TodayEventsServed: todayStats.EventsServed,
-			StatsJSON:         template.JS(statsJSON),
+			DailyStatsJSON:    template.JS(dailyStatsJSON),
+			HourlyStatsJSON:   template.JS(hourlyStatsJSON),
 		}
 
 		tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
