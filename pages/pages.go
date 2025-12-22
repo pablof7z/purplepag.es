@@ -145,7 +145,7 @@ func (h *Handler) HandleRankings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	if query == "" {
 		tmpl := template.Must(template.New("search").Funcs(rankingsFuncs).Parse(searchTemplate))
@@ -157,25 +157,14 @@ func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	metadataEvents, err := h.storage.QueryEvents(context.Background(), nostr.Filter{
-		Kinds: []int{0},
-	})
+	events, err := h.storage.SearchProfiles(context.Background(), query, 100)
 	if err != nil {
 		http.Error(w, "Failed to search", http.StatusInternalServerError)
 		return
 	}
 
-	latestMetadata := make(map[string]*nostr.Event)
-	for _, evt := range metadataEvents {
-		if existing, ok := latestMetadata[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
-			latestMetadata[evt.PubKey] = evt
-		}
-	}
-
-	queryLower := strings.ToLower(strings.TrimSpace(query))
-	matches := make([]Profile, 0)
-
-	for pubkey, evt := range latestMetadata {
+	matches := make([]Profile, 0, len(events))
+	for _, evt := range events {
 		var metadata map[string]interface{}
 		if err := json.Unmarshal([]byte(evt.Content), &metadata); err != nil {
 			continue
@@ -185,25 +174,17 @@ func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		displayName, _ := metadata["display_name"].(string)
 		about, _ := metadata["about"].(string)
 		nip05, _ := metadata["nip05"].(string)
+		picture, _ := metadata["picture"].(string)
 
-		searchableText := strings.ToLower(name + " " + displayName + " " + about + " " + nip05 + " " + pubkey)
-
-		if strings.Contains(searchableText, queryLower) {
-			picture, _ := metadata["picture"].(string)
-			matches = append(matches, Profile{
-				Pubkey:      pubkey,
-				Name:        name,
-				DisplayName: displayName,
-				Picture:     picture,
-				About:       truncate(about, 150),
-				Nip05:       nip05,
-				Npub:        convertToNpub(pubkey),
-			})
-		}
-
-		if len(matches) >= 100 {
-			break
-		}
+		matches = append(matches, Profile{
+			Pubkey:      evt.PubKey,
+			Name:        name,
+			DisplayName: displayName,
+			Picture:     picture,
+			About:       truncate(about, 150),
+			Nip05:       nip05,
+			Npub:        convertToNpub(evt.PubKey),
+		})
 	}
 
 	data := struct {

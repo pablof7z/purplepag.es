@@ -78,6 +78,8 @@ func (s *Storage) ApplySQLiteOptimizations() error {
 	indexes := []string{
 		// Composite index for kind+pubkey lookups (used by CheckPubkeyEventKinds)
 		"CREATE INDEX IF NOT EXISTS idx_kind_pubkey ON event(kind, pubkey)",
+		// Index for profile searches (kind 0 events sorted by created_at)
+		"CREATE INDEX IF NOT EXISTS idx_kind_created ON event(kind, created_at DESC)",
 	}
 
 	for _, indexSQL := range indexes {
@@ -158,6 +160,58 @@ func (s *Storage) Close() {
 // EventStore returns the underlying eventstore.Store for direct access
 func (s *Storage) EventStore() eventstore.Store {
 	return s.db
+}
+
+// SearchProfiles searches kind:0 events for profiles matching the query
+func (s *Storage) SearchProfiles(ctx context.Context, query string, limit int) ([]*nostr.Event, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	// Search in content field (which contains JSON with name, display_name, about, nip05)
+	// Also search by pubkey prefix
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT id, pubkey, created_at, kind, tags, content, sig
+		FROM event
+		WHERE kind = 0
+		AND (
+			content LIKE '%' || ? || '%' COLLATE NOCASE
+			OR pubkey LIKE ? || '%'
+		)
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, query, query, limit*2) // Fetch extra to account for duplicates
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := make(map[string]*nostr.Event)
+	for rows.Next() {
+		var evt nostr.Event
+		var tagsJSON string
+		if err := rows.Scan(&evt.ID, &evt.PubKey, &evt.CreatedAt, &evt.Kind, &tagsJSON, &evt.Content, &evt.Sig); err != nil {
+			continue
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &evt.Tags); err != nil {
+			evt.Tags = nil
+		}
+		// Keep only the latest event per pubkey
+		if existing, ok := seen[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
+			seen[evt.PubKey] = &evt
+		}
+	}
+
+	results := make([]*nostr.Event, 0, len(seen))
+	for _, evt := range seen {
+		results = append(results, evt)
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
 }
 
 // GetProfileNames returns a map of pubkey -> display name from kind:0 events
