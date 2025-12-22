@@ -190,6 +190,23 @@ func (s *Storage) GetTopIPs(ctx context.Context, limit int) ([]TopIP, error) {
 	return results, rows.Err()
 }
 
+func (s *Storage) GetEventsServedLast24Hours(ctx context.Context, ip string) (int64, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0, nil
+	}
+
+	var total int64
+	err := dbConn.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(events_served), 0)
+		FROM hourly_requests
+		WHERE ip = ?
+		  AND hour >= strftime('%Y-%m-%d %H', datetime('now', '-24 hours'))
+	`, ip).Scan(&total)
+
+	return total, err
+}
+
 func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
 	dbConn := s.getDBConn()
 	if dbConn == nil {

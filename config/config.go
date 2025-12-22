@@ -52,11 +52,13 @@ type TrustedSyncConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxSubscriptions int `json:"max_subscriptions"`
-	MaxFilters       int `json:"max_filters"`
-	MaxLimit         int `json:"max_limit"`
-	MaxEventTags     int `json:"max_event_tags"`
-	MaxContentLength int `json:"max_content_length"`
+	MaxSubscriptions    int `json:"max_subscriptions"`
+	MaxFilters          int `json:"max_filters"`
+	MaxLimit            int `json:"max_limit"`
+	MaxEventTags        int `json:"max_event_tags"`
+	MaxContentLength    int `json:"max_content_length"`
+	EventsPerDayLimit   int `json:"events_per_day_limit"`
+	MinTrustedFollowers int `json:"min_trusted_followers"`
 }
 
 // KindRange represents either a single kind or a range of kinds
@@ -238,6 +240,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Limits.MaxContentLength == 0 {
 		cfg.Limits.MaxContentLength = 131072
+	}
+	if cfg.Limits.EventsPerDayLimit == 0 {
+		cfg.Limits.EventsPerDayLimit = 50000
+	}
+	if cfg.Limits.MinTrustedFollowers == 0 {
+		cfg.Limits.MinTrustedFollowers = 1000
 	}
 
 	return &cfg, nil

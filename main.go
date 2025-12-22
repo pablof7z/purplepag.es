@@ -110,6 +110,7 @@ func main() {
 	analyticsTracker := analytics.NewTracker(store)
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, 10)
+	communityDetector := analytics.NewCommunityDetector(store)
 	discovery := relay2.NewDiscovery(store)
 	if err := discovery.BackfillDiscoveredRelays(context.Background()); err != nil {
 		log.Printf("Warning: failed to backfill discovered relays: %v", err)
@@ -154,6 +155,41 @@ func main() {
 			return true, fmt.Sprintf("limit too high: %d (max %d)", filter.Limit, cfg.Limits.MaxLimit)
 		}
 		return false, ""
+	})
+
+	// Rate limit check: require AUTH if IP has served too many events in 24 hours
+	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
+		ip := khatru.GetIP(ctx)
+		eventsServed, err := store.GetEventsServedLast24Hours(ctx, ip)
+		if err != nil {
+			log.Printf("rate limit: failed to get events served for IP %s: %v", ip, err)
+			return false, "" // Allow on error
+		}
+
+		if eventsServed < int64(cfg.Limits.EventsPerDayLimit) {
+			return false, "" // Under limit, allow
+		}
+
+		// Over limit - check if authenticated
+		authedPubkey := khatru.GetAuthed(ctx)
+		if authedPubkey == "" {
+			return true, fmt.Sprintf("auth-required: rate limit exceeded (%d events in 24h, limit %d). Please authenticate with a pubkey that has at least %d trusted followers.",
+				eventsServed, cfg.Limits.EventsPerDayLimit, cfg.Limits.MinTrustedFollowers)
+		}
+
+		// Authenticated - check if they have enough trusted followers
+		trustedFollowers, err := trustAnalyzer.GetTrustedFollowerCount(ctx, authedPubkey)
+		if err != nil {
+			log.Printf("rate limit: failed to get trusted followers for %s: %v", authedPubkey, err)
+			return true, "error checking trusted follower count"
+		}
+
+		if trustedFollowers < cfg.Limits.MinTrustedFollowers {
+			return true, fmt.Sprintf("rate limit exceeded. Your pubkey has %d trusted followers, minimum required is %d.",
+				trustedFollowers, cfg.Limits.MinTrustedFollowers)
+		}
+
+		return false, "" // Authenticated with enough trusted followers, allow
 	})
 
 	relay.StoreEvent = append(relay.StoreEvent, func(ctx context.Context, event *nostr.Event) error {
@@ -262,12 +298,14 @@ func main() {
 			log.Println("No trusted pubkeys found, running trust analysis immediately")
 			clusterDetector.Detect(ctx)
 			trustAnalyzer.AnalyzeTrust(ctx)
+			communityDetector.DetectCommunities(ctx)
 		} else {
 			time.Sleep(5 * time.Minute)
 		}
 		for {
 			clusterDetector.Detect(ctx)
 			trustAnalyzer.AnalyzeTrust(ctx)
+			communityDetector.DetectCommunities(ctx)
 			select {
 			case <-ctx.Done():
 				return
@@ -317,6 +355,7 @@ func main() {
 	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 	dashboardHandler := stats.NewDashboardHandler(store)
 	rejectionHandler := stats.NewRejectionHandler(store)
+	communitiesHandler := stats.NewCommunitiesHandler(store)
 	timecapsuleHandler := pages.NewTimecapsuleHandler(store)
 
 	// Password protection middleware for stats pages
@@ -348,6 +387,7 @@ func main() {
 	mux.HandleFunc("/stats/trusted-sync", requireStatsAuth(trustedSyncHandler.HandleTrustedSyncStats()))
 	mux.HandleFunc("/stats/dashboard", requireStatsAuth(dashboardHandler.HandleDashboard()))
 	mux.HandleFunc("/stats/rejections", requireStatsAuth(rejectionHandler.HandleRejectionStats()))
+	mux.HandleFunc("/stats/communities", requireStatsAuth(communitiesHandler.HandleCommunities()))
 	mux.HandleFunc("/relays", requireStatsAuth(statsTracker.HandleRelays()))
 	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "icon.png")

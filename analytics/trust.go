@@ -244,3 +244,23 @@ func (t *TrustAnalyzer) GetTrustedPubkeys() []string {
 func (t *TrustAnalyzer) GetSpamCandidates(ctx context.Context, limit int) ([]storage.SpamCandidate, error) {
 	return t.storage.GetSpamCandidates(ctx, limit)
 }
+
+// GetTrustedFollowerCount returns how many trusted pubkeys follow the given pubkey
+func (t *TrustAnalyzer) GetTrustedFollowerCount(ctx context.Context, pubkey string) (int, error) {
+	followers, err := t.storage.GetFollowersOfPubkey(ctx, pubkey)
+	if err != nil {
+		return 0, err
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	count := 0
+	for _, follower := range followers {
+		if t.trustedSet[follower] {
+			count++
+		}
+	}
+
+	return count, nil
+}

@@ -155,6 +155,14 @@ var statsTemplate = `<!DOCTYPE html>
                     <div class="stat-subvalue">rejected events & unsupported REQs →</div>
                 </div>
             </a>
+
+            <a href="/stats/communities" style="text-decoration: none; color: inherit;">
+                <div class="stat-card" style="cursor: pointer;">
+                    <div class="stat-label">Social Graph</div>
+                    <div class="stat-value">View</div>
+                    <div class="stat-subvalue">community clusters visualization →</div>
+                </div>
+            </a>
         </div>
 
         <div class="section">

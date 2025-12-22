@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -133,6 +134,39 @@ func (s *Storage) InitAnalyticsSchema() error {
 	CREATE TABLE IF NOT EXISTS trusted_pubkeys (
 		pubkey TEXT PRIMARY KEY,
 		trusted_at INTEGER NOT NULL
+	);
+
+	-- Social graph communities
+	CREATE TABLE IF NOT EXISTS communities (
+		id INTEGER PRIMARY KEY,
+		size INTEGER NOT NULL,
+		internal_edges INTEGER NOT NULL,
+		external_edges INTEGER NOT NULL,
+		modularity REAL NOT NULL,
+		top_members TEXT NOT NULL,
+		detected_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS community_members (
+		community_id INTEGER NOT NULL,
+		pubkey TEXT NOT NULL,
+		PRIMARY KEY (community_id, pubkey)
+	);
+	CREATE INDEX IF NOT EXISTS idx_community_member_pubkey ON community_members(pubkey);
+
+	CREATE TABLE IF NOT EXISTS community_edges (
+		from_id INTEGER NOT NULL,
+		to_id INTEGER NOT NULL,
+		weight INTEGER NOT NULL,
+		PRIMARY KEY (from_id, to_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS community_stats (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		total_nodes INTEGER NOT NULL,
+		total_edges INTEGER NOT NULL,
+		num_communities INTEGER NOT NULL,
+		detected_at INTEGER NOT NULL
 	);
 	`
 
@@ -941,4 +975,299 @@ func (s *Storage) GetTrustedPubkeys(ctx context.Context) ([]string, error) {
 	}
 
 	return pubkeys, rows.Err()
+}
+
+// GetFollowersOfPubkey returns all pubkeys that follow the given pubkey (from their kind:3 events)
+func (s *Storage) GetFollowersOfPubkey(ctx context.Context, pubkey string) ([]string, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	// Find the latest kind:3 event per author that has a "p" tag for this pubkey
+	query := `
+		WITH latest_contact_lists AS (
+			SELECT e1.pubkey as follower, e1.tags
+			FROM event e1
+			INNER JOIN (
+				SELECT pubkey, MAX(created_at) as max_created_at
+				FROM event
+				WHERE kind = 3
+				GROUP BY pubkey
+			) e2 ON e1.pubkey = e2.pubkey AND e1.created_at = e2.max_created_at
+			WHERE e1.kind = 3
+		)
+		SELECT DISTINCT follower
+		FROM latest_contact_lists, json_each(latest_contact_lists.tags) as tag
+		WHERE json_extract(tag.value, '$[0]') = 'p'
+		  AND json_extract(tag.value, '$[1]') = ?
+	`
+
+	rows, err := dbConn.QueryContext(ctx, query, pubkey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var followers []string
+	for rows.Next() {
+		var follower string
+		if err := rows.Scan(&follower); err != nil {
+			return nil, err
+		}
+		followers = append(followers, follower)
+	}
+
+	return followers, rows.Err()
+}
+
+// Community types for storage
+type StoredCommunity struct {
+	ID            int
+	Size          int
+	InternalEdges int
+	ExternalEdges int
+	Modularity    float64
+	TopMembers    []StoredCommunityMember
+	DetectedAt    time.Time
+}
+
+type StoredCommunityMember struct {
+	Pubkey        string `json:"pubkey"`
+	Name          string `json:"name"`
+	FollowerCount int    `json:"follower_count"`
+}
+
+type StoredCommunityEdge struct {
+	FromID int
+	ToID   int
+	Weight int
+}
+
+type StoredCommunityGraph struct {
+	Communities    []StoredCommunity
+	Edges          []StoredCommunityEdge
+	TotalNodes     int
+	TotalEdges     int
+	NumCommunities int
+	DetectedAt     time.Time
+}
+
+// CommunityGraph interface for saving (matches analytics.CommunityGraph)
+type CommunityGraphData interface {
+	GetCommunities() []CommunityData
+	GetEdges() []EdgeData
+	GetTotalNodes() int
+	GetTotalEdges() int
+}
+
+type CommunityData interface {
+	GetID() int
+	GetSize() int
+	GetMembers() []string
+	GetTopMembers() []MemberData
+	GetInternalEdges() int
+	GetExternalEdges() int
+	GetModularity() float64
+}
+
+type EdgeData interface {
+	GetFromID() int
+	GetToID() int
+	GetWeight() int
+}
+
+type MemberData interface {
+	GetPubkey() string
+	GetName() string
+	GetFollowerCount() int
+}
+
+// SaveCommunities saves community detection results
+func (s *Storage) SaveCommunities(ctx context.Context, graph interface{}) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	// Type assert to get the data
+	type communityGraph struct {
+		Communities []struct {
+			ID            int
+			Members       []string
+			Size          int
+			TopMembers    []struct {
+				Pubkey        string
+				Name          string
+				FollowerCount int
+			}
+			InternalEdges int
+			ExternalEdges int
+			Modularity    float64
+		}
+		Edges []struct {
+			FromID int
+			ToID   int
+			Weight int
+		}
+		TotalNodes int
+		TotalEdges int
+	}
+
+	// Use reflection-free approach with JSON marshaling
+	jsonData, err := json.Marshal(graph)
+	if err != nil {
+		return err
+	}
+
+	var cg communityGraph
+	if err := json.Unmarshal(jsonData, &cg); err != nil {
+		return err
+	}
+
+	tx, err := dbConn.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().Unix()
+
+	// Clear old data
+	tx.ExecContext(ctx, `DELETE FROM community_members`)
+	tx.ExecContext(ctx, `DELETE FROM community_edges`)
+	tx.ExecContext(ctx, `DELETE FROM communities`)
+
+	// Insert communities
+	for _, com := range cg.Communities {
+		topMembersJSON, _ := json.Marshal(com.TopMembers)
+
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO communities (id, size, internal_edges, external_edges, modularity, top_members, detected_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, com.ID, com.Size, com.InternalEdges, com.ExternalEdges, com.Modularity, string(topMembersJSON), now)
+		if err != nil {
+			return err
+		}
+
+		// Insert members
+		for _, member := range com.Members {
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO community_members (community_id, pubkey) VALUES (?, ?)
+			`, com.ID, member)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// Insert edges
+	for _, edge := range cg.Edges {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO community_edges (from_id, to_id, weight) VALUES (?, ?, ?)
+		`, edge.FromID, edge.ToID, edge.Weight)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Update stats
+	_, err = tx.ExecContext(ctx, `
+		INSERT OR REPLACE INTO community_stats (id, total_nodes, total_edges, num_communities, detected_at)
+		VALUES (1, ?, ?, ?, ?)
+	`, cg.TotalNodes, cg.TotalEdges, len(cg.Communities), now)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// GetCommunityGraph returns the stored community graph
+func (s *Storage) GetCommunityGraph(ctx context.Context) (*StoredCommunityGraph, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	result := &StoredCommunityGraph{}
+
+	// Get stats
+	var detectedAt int64
+	err := dbConn.QueryRowContext(ctx, `
+		SELECT total_nodes, total_edges, num_communities, detected_at
+		FROM community_stats WHERE id = 1
+	`).Scan(&result.TotalNodes, &result.TotalEdges, &result.NumCommunities, &detectedAt)
+	if err != nil {
+		return nil, nil // No data yet
+	}
+	result.DetectedAt = time.Unix(detectedAt, 0)
+
+	// Get communities
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT id, size, internal_edges, external_edges, modularity, top_members, detected_at
+		FROM communities ORDER BY size DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var com StoredCommunity
+		var topMembersJSON string
+		var detAt int64
+		if err := rows.Scan(&com.ID, &com.Size, &com.InternalEdges, &com.ExternalEdges, &com.Modularity, &topMembersJSON, &detAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(topMembersJSON), &com.TopMembers)
+		com.DetectedAt = time.Unix(detAt, 0)
+		result.Communities = append(result.Communities, com)
+	}
+
+	// Get edges
+	edgeRows, err := dbConn.QueryContext(ctx, `
+		SELECT from_id, to_id, weight FROM community_edges ORDER BY weight DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer edgeRows.Close()
+
+	for edgeRows.Next() {
+		var edge StoredCommunityEdge
+		if err := edgeRows.Scan(&edge.FromID, &edge.ToID, &edge.Weight); err != nil {
+			return nil, err
+		}
+		result.Edges = append(result.Edges, edge)
+	}
+
+	return result, nil
+}
+
+// GetCommunityMembers returns all members of a community
+func (s *Storage) GetCommunityMembers(ctx context.Context, communityID int, limit int) ([]string, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT pubkey FROM community_members WHERE community_id = ? LIMIT ?
+	`, communityID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []string
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		members = append(members, pubkey)
+	}
+
+	return members, rows.Err()
 }
