@@ -17,13 +17,17 @@
     "backend": "sqlite3",
     "path": "./data/purplepages.db"
   },
-  "allowed_kinds": [0, 3, 10000, 10001, 10002, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10015, 10020, 10030, 10050, 10101, 10102, 30000, 30002, 30003, 30004, 30005, 30007, 30015, 30030, 30063, 30267, 31924, 39089, 39092],
+  "allowed_kinds": [0, 3, "10000-19999", "30000-39999"],
   "sync": {
-    "enabled": true,
-    "relays": [
-      "wss://purplepag.es"
-    ],
-    "kinds": [10002]
+    "enabled": false,
+    "relays": [],
+    "kinds": []
+  },
+  "trusted_sync": {
+    "interval_minutes": 30,
+    "batch_size": 50,
+    "kinds": [0, 3, 10002],
+    "timeout_seconds": 30
   },
   "profile_hydration": {
     "enabled": true,

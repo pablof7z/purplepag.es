@@ -103,7 +103,7 @@ func main() {
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, 10)
 	discovery := relay2.NewDiscovery(store)
-	syncQueue := relay2.NewSyncQueue(store, cfg.AllowedKinds)
+	syncQueue := relay2.NewSyncQueue(store, cfg.SyncKinds)
 
 	relay := khatru.NewRelay()
 
@@ -197,7 +197,7 @@ func main() {
 	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
 		syncKinds := cfg.Sync.Kinds
 		if len(syncKinds) == 0 {
-			syncKinds = cfg.AllowedKinds
+			syncKinds = cfg.SyncKinds
 		}
 		log.Printf("Starting initial sync from %d relays for %d kinds...", len(cfg.Sync.Relays), len(syncKinds))
 		syncer := sync.NewSyncer(store, syncKinds, cfg.Sync.Relays)
@@ -288,7 +288,7 @@ func main() {
 	mux.HandleFunc("/rankings", pageHandler.HandleRankings)
 	mux.HandleFunc("/search", pageHandler.HandleSearch)
 	mux.HandleFunc("/profile", pageHandler.HandleProfile)
-	mux.HandleFunc("/stats", statsTracker.HandleStats(cfg.AllowedKinds))
+	mux.HandleFunc("/stats", statsTracker.HandleStats(cfg.AllowedKinds.ToSlice()))
 	mux.HandleFunc("/stats/analytics", analyticsHandler.HandleAnalytics())
 	mux.HandleFunc("/stats/analytics/purge", analyticsHandler.HandlePurge())
 	mux.HandleFunc("/relays", statsTracker.HandleRelays())
@@ -386,10 +386,10 @@ func runSyncCommand(args []string) {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// If no kinds specified, use allowed kinds from config
+	// If no kinds specified, use sync kinds from config
 	if len(kindsToSync) == 0 {
-		kindsToSync = cfg.AllowedKinds
-		log.Printf("No kinds specified, using all allowed kinds: %v", kindsToSync)
+		kindsToSync = cfg.SyncKinds
+		log.Printf("No kinds specified, using sync kinds: %v", kindsToSync)
 	}
 
 	// Open storage

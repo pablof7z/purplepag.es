@@ -67,20 +67,33 @@ func (s *Syncer) syncKind(ctx context.Context, relay *nostr.Relay, kind int) err
 
 	eventCount := 0
 	newEvents := 0
-	timeout := time.After(2 * time.Minute)
+
+	// Idle timeout - resets each time we receive an event
+	idleTimeout := 30 * time.Second
+	timer := time.NewTimer(idleTimeout)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-timeout:
-			log.Printf("Sync timeout for kind %d: received %d events, saved %d new events", kind, eventCount, newEvents)
+		case <-timer.C:
+			log.Printf("Sync idle timeout for kind %d: received %d events, saved %d new events", kind, eventCount, newEvents)
 			return nil
 		case evt := <-sub.Events:
 			if evt == nil {
 				continue
 			}
 			eventCount++
+
+			// Reset idle timer
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(idleTimeout)
 
 			if err := s.storage.SaveEvent(ctx, evt); err == nil {
 				newEvents++

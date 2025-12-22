@@ -2,7 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type RelayInfo struct {
@@ -56,15 +59,123 @@ type LimitsConfig struct {
 	MaxContentLength int `json:"max_content_length"`
 }
 
+// KindRange represents either a single kind or a range of kinds
+type KindRange struct {
+	Start int
+	End   int // same as Start for single kinds
+}
+
+// KindSet holds both individual kinds and ranges for efficient matching
+type KindSet struct {
+	kinds  map[int]bool
+	ranges []KindRange
+}
+
+func (ks *KindSet) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	ks.kinds = make(map[int]bool)
+	ks.ranges = nil
+
+	for _, item := range raw {
+		// Try as integer first
+		var kind int
+		if err := json.Unmarshal(item, &kind); err == nil {
+			ks.kinds[kind] = true
+			continue
+		}
+
+		// Try as string range (e.g., "10000-19999")
+		var rangeStr string
+		if err := json.Unmarshal(item, &rangeStr); err == nil {
+			parts := strings.Split(rangeStr, "-")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid kind range format: %s (expected 'start-end')", rangeStr)
+			}
+
+			start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+			if err != nil {
+				return fmt.Errorf("invalid range start: %s", parts[0])
+			}
+
+			end, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil {
+				return fmt.Errorf("invalid range end: %s", parts[1])
+			}
+
+			if start > end {
+				return fmt.Errorf("invalid range: start (%d) > end (%d)", start, end)
+			}
+
+			ks.ranges = append(ks.ranges, KindRange{Start: start, End: end})
+			continue
+		}
+
+		return fmt.Errorf("allowed_kinds must contain integers or range strings like \"10000-19999\"")
+	}
+
+	return nil
+}
+
+func (ks *KindSet) Contains(kind int) bool {
+	if ks.kinds[kind] {
+		return true
+	}
+	for _, r := range ks.ranges {
+		if kind >= r.Start && kind <= r.End {
+			return true
+		}
+	}
+	return false
+}
+
+// ToSlice returns all explicit kinds (not ranges) for backwards compatibility
+func (ks *KindSet) ToSlice() []int {
+	result := make([]int, 0, len(ks.kinds))
+	for k := range ks.kinds {
+		result = append(result, k)
+	}
+	return result
+}
+
+// IsEmpty returns true if no kinds are configured
+func (ks *KindSet) IsEmpty() bool {
+	return len(ks.kinds) == 0 && len(ks.ranges) == 0
+}
+
 type Config struct {
 	Relay            RelayInfo              `json:"relay"`
 	Server           ServerConfig           `json:"server"`
 	Storage          StorageConfig          `json:"storage"`
-	AllowedKinds     []int                  `json:"allowed_kinds"`
+	AllowedKinds     KindSet                `json:"allowed_kinds"`
+	SyncKinds        []int                  `json:"sync_kinds"`
 	Sync             SyncConfig             `json:"sync"`
 	ProfileHydration ProfileHydrationConfig `json:"profile_hydration"`
 	TrustedSync      TrustedSyncConfig      `json:"trusted_sync"`
 	Limits           LimitsConfig           `json:"limits"`
+}
+
+// DefaultSyncKinds returns the default kinds to sync (NIP-51 lists + profiles)
+func DefaultSyncKinds() []int {
+	return []int{
+		0,     // Profiles
+		3,     // Follow list
+		10000, // Mute list
+		10001, // Pinned notes
+		10002, // Relay list
+		10003, // Bookmarks
+		10004, // Communities
+		10005, // Public chats
+		10006, // Blocked relays
+		10007, // Search relays
+		10009, // Simple groups
+		10015, // Interests
+		10030, // Emojis
+		10050, // DM relays
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -76,6 +187,11 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+
+	// Set defaults for sync kinds
+	if len(cfg.SyncKinds) == 0 {
+		cfg.SyncKinds = DefaultSyncKinds()
 	}
 
 	// Set defaults for profile hydration
@@ -100,7 +216,7 @@ func Load(path string) (*Config, error) {
 		cfg.TrustedSync.BatchSize = 50
 	}
 	if len(cfg.TrustedSync.Kinds) == 0 {
-		cfg.TrustedSync.Kinds = cfg.AllowedKinds
+		cfg.TrustedSync.Kinds = cfg.SyncKinds
 	}
 	if cfg.TrustedSync.TimeoutSeconds == 0 {
 		cfg.TrustedSync.TimeoutSeconds = 30
@@ -127,10 +243,5 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) IsKindAllowed(kind int) bool {
-	for _, k := range c.AllowedKinds {
-		if k == kind {
-			return true
-		}
-	}
-	return false
+	return c.AllowedKinds.Contains(kind)
 }
