@@ -125,7 +125,7 @@ func (s *TrustedSyncer) syncPubkey(ctx context.Context, pubkey string, lastSynce
 			continue
 		}
 
-		count := s.fetchFromRelay(ctx, normalized, filter)
+		count := s.fetchFromRelay(ctx, normalized, pubkey, filter)
 		eventsFound += count
 	}
 
@@ -140,7 +140,7 @@ func (s *TrustedSyncer) syncPubkey(ctx context.Context, pubkey string, lastSynce
 	}
 }
 
-func (s *TrustedSyncer) fetchFromRelay(ctx context.Context, relayURL string, filter nostr.Filter) int {
+func (s *TrustedSyncer) fetchFromRelay(ctx context.Context, relayURL, pubkey string, filter nostr.Filter) int {
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 
@@ -160,6 +160,9 @@ func (s *TrustedSyncer) fetchFromRelay(ctx context.Context, relayURL string, fil
 	for {
 		select {
 		case <-timeoutCtx.Done():
+			if count > 0 {
+				s.storage.RecordTrustedSyncRelayStat(ctx, relayURL, pubkey, count)
+			}
 			return count
 		case evt := <-sub.Events:
 			if evt == nil {
@@ -173,6 +176,9 @@ func (s *TrustedSyncer) fetchFromRelay(ctx context.Context, relayURL string, fil
 				count++
 			}
 		case <-sub.EndOfStoredEvents:
+			if count > 0 {
+				s.storage.RecordTrustedSyncRelayStat(ctx, relayURL, pubkey, count)
+			}
 			return count
 		}
 	}

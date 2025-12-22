@@ -282,6 +282,7 @@ func main() {
 	pageHandler := pages.NewHandler(store)
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
+	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", relay.ServeHTTP)
@@ -291,6 +292,7 @@ func main() {
 	mux.HandleFunc("/stats", statsTracker.HandleStats(cfg.AllowedKinds.ToSlice()))
 	mux.HandleFunc("/stats/analytics", analyticsHandler.HandleAnalytics())
 	mux.HandleFunc("/stats/analytics/purge", analyticsHandler.HandlePurge())
+	mux.HandleFunc("/stats/trusted-sync", trustedSyncHandler.HandleTrustedSyncStats())
 	mux.HandleFunc("/relays", statsTracker.HandleRelays())
 
 	server := &http.Server{

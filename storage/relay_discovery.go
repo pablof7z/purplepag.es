@@ -400,6 +400,17 @@ func (s *Storage) InitTrustedSyncSchema() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_trusted_sync_last_synced ON trusted_sync_state(last_synced_at);
+
+	CREATE TABLE IF NOT EXISTS trusted_sync_relay_stats (
+		relay_url TEXT NOT NULL,
+		pubkey TEXT NOT NULL,
+		events_fetched INTEGER NOT NULL DEFAULT 0,
+		last_sync_at INTEGER NOT NULL,
+		PRIMARY KEY (relay_url, pubkey)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_trusted_sync_relay_stats_relay ON trusted_sync_relay_stats(relay_url);
+	CREATE INDEX IF NOT EXISTS idx_trusted_sync_relay_stats_pubkey ON trusted_sync_relay_stats(pubkey);
 	`
 
 	_, err := dbConn.Exec(schema)
@@ -475,6 +486,122 @@ func (s *Storage) UpdateTrustedSyncState(ctx context.Context, pubkey string) err
 	`, pubkey, now)
 
 	return err
+}
+
+func (s *Storage) RecordTrustedSyncRelayStat(ctx context.Context, relayURL, pubkey string, eventsFetched int) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO trusted_sync_relay_stats (relay_url, pubkey, events_fetched, last_sync_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(relay_url, pubkey) DO UPDATE SET
+			events_fetched = events_fetched + excluded.events_fetched,
+			last_sync_at = excluded.last_sync_at
+	`, relayURL, pubkey, eventsFetched, now)
+
+	return err
+}
+
+type TrustedSyncRelayStat struct {
+	RelayURL      string
+	TotalEvents   int64
+	UniquePubkeys int64
+	LastSyncAt    int64
+}
+
+func (s *Storage) GetTrustedSyncRelayStats(ctx context.Context) ([]TrustedSyncRelayStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT
+			relay_url,
+			SUM(events_fetched) as total_events,
+			COUNT(DISTINCT pubkey) as unique_pubkeys,
+			MAX(last_sync_at) as last_sync_at
+		FROM trusted_sync_relay_stats
+		GROUP BY relay_url
+		ORDER BY total_events DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []TrustedSyncRelayStat
+	for rows.Next() {
+		var stat TrustedSyncRelayStat
+		if err := rows.Scan(&stat.RelayURL, &stat.TotalEvents, &stat.UniquePubkeys, &stat.LastSyncAt); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+type TrustedSyncPubkeyStat struct {
+	Pubkey       string
+	TotalEvents  int64
+	RelayCount   int64
+	LastSyncAt   int64
+}
+
+func (s *Storage) GetTrustedSyncPubkeyStats(ctx context.Context, limit int) ([]TrustedSyncPubkeyStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT
+			pubkey,
+			SUM(events_fetched) as total_events,
+			COUNT(DISTINCT relay_url) as relay_count,
+			MAX(last_sync_at) as last_sync_at
+		FROM trusted_sync_relay_stats
+		GROUP BY pubkey
+		ORDER BY total_events DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []TrustedSyncPubkeyStat
+	for rows.Next() {
+		var stat TrustedSyncPubkeyStat
+		if err := rows.Scan(&stat.Pubkey, &stat.TotalEvents, &stat.RelayCount, &stat.LastSyncAt); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+func (s *Storage) GetTrustedSyncTotalStats(ctx context.Context) (totalEvents int64, totalPubkeys int64, totalRelays int64, err error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0, 0, 0, nil
+	}
+
+	err = dbConn.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(events_fetched), 0),
+			COUNT(DISTINCT pubkey),
+			COUNT(DISTINCT relay_url)
+		FROM trusted_sync_relay_stats
+	`).Scan(&totalEvents, &totalPubkeys, &totalRelays)
+
+	return
 }
 
 func (s *Storage) GetPubkeyRelayList(ctx context.Context, pubkey string) ([]string, error) {
