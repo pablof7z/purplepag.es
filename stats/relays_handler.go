@@ -15,187 +15,60 @@ var relaysTemplate = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>purplepag.es - Discovered Relays</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
             min-height: 100vh;
             padding: 2rem;
-            color: #fff;
+            color: #c9d1d9;
         }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        header {
-            text-align: center;
-            margin-bottom: 3rem;
-        }
-
-        h1 {
-            font-size: 3rem;
-            margin-bottom: 0.5rem;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .subtitle {
-            font-size: 1.2rem;
-            opacity: 0.9;
-        }
-
-        .back-link {
-            display: inline-block;
-            margin-bottom: 2rem;
-            color: #fff;
-            text-decoration: none;
-            opacity: 0.8;
-            transition: opacity 0.2s;
-        }
-
-        .back-link:hover {
-            opacity: 1;
-        }
-
+        .container { max-width: 1400px; margin: 0 auto; }
+        header { margin-bottom: 2rem; border-bottom: 1px solid #21262d; padding-bottom: 1rem; }
+        h1 { font-size: 1.5rem; font-weight: 600; color: #f0f6fc; margin-bottom: 0.25rem; }
+        .subtitle { font-size: 0.875rem; color: #8b949e; }
+        .back-link { display: inline-block; margin-bottom: 1rem; color: #58a6ff; text-decoration: none; font-size: 0.875rem; }
+        .back-link:hover { text-decoration: underline; }
         .table-container {
-            background: rgba(255, 255, 255, 0.15);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: 2rem;
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
             overflow-x: auto;
         }
-
-        table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-        }
-
+        table { width: 100%; border-collapse: collapse; }
         thead th {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 1rem;
+            padding: 0.5rem;
             text-align: left;
             font-weight: 600;
             text-transform: uppercase;
-            font-size: 0.85rem;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+            font-size: 0.625rem;
+            color: #8b949e;
+            border-bottom: 1px solid #21262d;
         }
-
-        thead th:first-child {
-            border-top-left-radius: 8px;
-        }
-
-        thead th:last-child {
-            border-top-right-radius: 8px;
-        }
-
-        tbody tr {
-            transition: background 0.2s;
-        }
-
-        tbody tr:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        tbody td {
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .relay-url {
-            font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Courier New', monospace;
-            font-size: 0.9rem;
-        }
-
-        .relay-url a {
-            color: #fff;
-            text-decoration: none;
-            transition: opacity 0.2s;
-        }
-
-        .relay-url a:hover {
-            opacity: 0.8;
-            text-decoration: underline;
-        }
-
-        .time-ago {
-            opacity: 0.8;
-            font-size: 0.9rem;
-        }
-
-        .success-rate {
-            font-weight: 600;
-        }
-
-        .success-rate.high {
-            color: #86efac;
-        }
-
-        .success-rate.medium {
-            color: #fde047;
-        }
-
-        .success-rate.low {
-            color: #fca5a5;
-        }
-
+        tbody tr:hover { background: #1c2128; }
+        tbody td { padding: 0.5rem; border-bottom: 1px solid #21262d; font-size: 0.75rem; }
+        .relay-url a { color: #58a6ff; text-decoration: none; }
+        .relay-url a:hover { text-decoration: underline; }
+        .time-ago { color: #8b949e; }
+        .success-rate { font-weight: 600; }
+        .success-rate.high { color: #3fb950; }
+        .success-rate.medium { color: #d29922; }
+        .success-rate.low { color: #f85149; }
         .status {
             display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 12px;
-            font-size: 0.8rem;
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.625rem;
             font-weight: 600;
         }
-
-        .status.active {
-            background: rgba(134, 239, 172, 0.2);
-            color: #86efac;
-        }
-
-        .status.inactive {
-            background: rgba(252, 165, 165, 0.2);
-            color: #fca5a5;
-        }
-
-        .events-count {
-            font-weight: 700;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .no-relays {
-            text-align: center;
-            padding: 3rem;
-            opacity: 0.7;
-        }
-
+        .status.active { background: #238636; color: #fff; }
+        .status.inactive { background: #21262d; color: #8b949e; }
+        .events-count { font-weight: 600; font-variant-numeric: tabular-nums; color: #f0f6fc; }
+        .no-relays { text-align: center; padding: 2rem; color: #8b949e; }
         @media (max-width: 768px) {
-            body {
-                padding: 1rem;
-            }
-
-            h1 {
-                font-size: 2rem;
-            }
-
-            .table-container {
-                padding: 1rem;
-            }
-
-            table {
-                font-size: 0.85rem;
-            }
-
-            thead th, tbody td {
-                padding: 0.75rem 0.5rem;
-            }
+            body { padding: 1rem; }
+            thead th, tbody td { padding: 0.375rem; }
         }
     </style>
 </head>

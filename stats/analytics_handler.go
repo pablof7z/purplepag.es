@@ -228,148 +228,132 @@ var analyticsTemplate = `<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
-            background: #0a0a0f;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
             min-height: 100vh;
             padding: 2rem;
-            color: #e4e4e7;
+            color: #c9d1d9;
         }
-        body::before {
-            content: '';
-            position: fixed;
-            top: -50%; left: -50%;
-            width: 200%; height: 200%;
-            background: radial-gradient(circle at 30% 20%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
-                        radial-gradient(circle at 70% 80%, rgba(217, 70, 239, 0.06) 0%, transparent 50%);
-            pointer-events: none;
-        }
-        .container { max-width: 1400px; margin: 0 auto; position: relative; z-index: 1; }
-        header { margin-bottom: 3rem; text-align: center; }
-        h1 {
-            font-size: 2.5rem; font-weight: 700; margin-bottom: 0.5rem;
-            background: linear-gradient(135deg, #a78bfa 0%, #e879f9 50%, #a78bfa 100%);
-            background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        }
-        .subtitle { font-size: 1rem; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.15em; }
-        .back-link { display: inline-block; margin-bottom: 1rem; color: #a78bfa; text-decoration: none; }
-        .back-link:hover { color: #c4b5fd; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        header { margin-bottom: 2rem; border-bottom: 1px solid #21262d; padding-bottom: 1rem; }
+        h1 { font-size: 1.5rem; font-weight: 600; color: #f0f6fc; margin-bottom: 0.25rem; }
+        .subtitle { font-size: 0.875rem; color: #8b949e; }
+        .back-link { display: inline-block; margin-bottom: 1rem; color: #58a6ff; text-decoration: none; font-size: 0.875rem; }
+        .back-link:hover { text-decoration: underline; }
 
         .search-box {
-            background: rgba(139, 92, 246, 0.05);
-            border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 16px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
         }
         .search-box input {
             width: 100%;
-            padding: 1rem;
-            font-size: 1rem;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(167, 139, 250, 0.2);
-            border-radius: 8px;
-            color: #e4e4e7;
-            font-family: monospace;
+            padding: 0.5rem;
+            font-size: 0.875rem;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-family: inherit;
         }
-        .search-box input:focus { outline: none; border-color: #a78bfa; }
+        .search-box input:focus { outline: none; border-color: #58a6ff; }
         .search-box button {
-            margin-top: 1rem;
-            padding: 0.75rem 2rem;
-            background: linear-gradient(135deg, #8b5cf6 0%, #d946ef 100%);
-            border: none;
-            border-radius: 8px;
-            color: white;
-            font-weight: 600;
+            margin-top: 0.75rem;
+            padding: 0.5rem 1rem;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-family: inherit;
+            font-size: 0.875rem;
             cursor: pointer;
         }
+        .search-box button:hover { background: #30363d; }
 
         .result-card {
-            background: rgba(139, 92, 246, 0.08);
-            border: 1px solid rgba(167, 139, 250, 0.2);
-            border-radius: 16px;
-            padding: 1.5rem;
-            margin-bottom: 2rem;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
         }
-        .result-card h3 { color: #a78bfa; margin-bottom: 1rem; }
-        .result-card .pubkey { font-family: monospace; font-size: 0.9rem; color: #71717a; word-break: break-all; }
-        .result-card .stats { display: flex; gap: 2rem; margin-top: 1rem; }
-        .result-card .stat { }
-        .result-card .stat-label { font-size: 0.75rem; color: #71717a; text-transform: uppercase; }
-        .result-card .stat-value { font-size: 1.5rem; font-weight: 700; color: #e4e4e7; }
-        .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; margin-left: 0.5rem; }
-        .badge.trusted { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
-        .badge.cluster { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+        .result-card h3 { color: #f0f6fc; margin-bottom: 0.75rem; font-size: 0.875rem; }
+        .result-card .pubkey { font-size: 0.75rem; color: #8b949e; word-break: break-all; }
+        .result-card .stats { display: flex; gap: 2rem; margin-top: 0.75rem; }
+        .result-card .stat-label { font-size: 0.625rem; color: #8b949e; text-transform: uppercase; }
+        .result-card .stat-value { font-size: 1.25rem; font-weight: 600; color: #f0f6fc; }
+        .badge { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 4px; font-size: 0.625rem; font-weight: 600; margin-left: 0.5rem; }
+        .badge.trusted { background: #238636; color: #fff; }
+        .badge.cluster { background: #da3633; color: #fff; }
 
         .section {
-            background: rgba(139, 92, 246, 0.03);
-            border: 1px solid rgba(167, 139, 250, 0.1);
-            border-radius: 24px;
-            padding: 2rem;
-            margin-bottom: 2rem;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
         }
-        .section h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1.5rem; color: #e4e4e7; }
+        .section h2 { font-size: 0.875rem; font-weight: 600; margin-bottom: 1rem; color: #f0f6fc; }
 
         .data-table { width: 100%; border-collapse: collapse; }
-        .data-table th, .data-table td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid rgba(167, 139, 250, 0.1); }
-        .data-table th { color: #71717a; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
-        .data-table td { font-size: 0.9rem; }
-        .data-table .mono { font-family: monospace; color: #a1a1aa; }
-        .data-table .num { font-variant-numeric: tabular-nums; color: #a78bfa; font-weight: 600; }
+        .data-table th, .data-table td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #21262d; }
+        .data-table th { color: #8b949e; font-weight: 600; font-size: 0.625rem; text-transform: uppercase; }
+        .data-table td { font-size: 0.75rem; }
+        .data-table .mono { color: #8b949e; }
+        .data-table .num { font-variant-numeric: tabular-nums; color: #58a6ff; font-weight: 600; }
 
         .cluster-card {
-            background: rgba(239, 68, 68, 0.05);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-            border-radius: 12px;
-            padding: 1rem;
-            margin-bottom: 1rem;
+            background: #1c1210;
+            border: 1px solid #f8514966;
+            border-radius: 6px;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
         }
-        .cluster-card .header { display: flex; justify-content: space-between; margin-bottom: 0.5rem; }
-        .cluster-card .members { font-family: monospace; font-size: 0.8rem; color: #71717a; }
+        .cluster-card .header { display: flex; justify-content: space-between; margin-bottom: 0.5rem; font-size: 0.75rem; }
+        .cluster-card .members { font-size: 0.625rem; color: #8b949e; }
 
-        .spam-section {
-            background: rgba(239, 68, 68, 0.03);
-            border: 1px solid rgba(239, 68, 68, 0.15);
-        }
+        .spam-section { background: #1c1210; border-color: #f8514966; }
         .purge-btn {
-            padding: 0.75rem 2rem;
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            padding: 0.5rem 1rem;
+            background: #da3633;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             color: white;
             font-weight: 600;
+            font-family: inherit;
+            font-size: 0.75rem;
             cursor: pointer;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
         }
-        .purge-btn:hover { opacity: 0.9; }
+        .purge-btn:hover { background: #f85149; }
 
         .message {
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            color: #22c55e;
-            padding: 1rem;
-            border-radius: 8px;
-            margin-bottom: 2rem;
+            background: #122117;
+            border: 1px solid #238636;
+            color: #3fb950;
+            padding: 0.75rem;
+            border-radius: 6px;
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
         }
 
-        .stats-row {
-            display: flex;
-            gap: 2rem;
-            margin-bottom: 2rem;
-        }
+        .stats-row { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
         .stat-box {
-            background: rgba(139, 92, 246, 0.05);
-            border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 16px;
-            padding: 1.5rem;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
             flex: 1;
         }
-        .stat-box .label { font-size: 0.75rem; color: #71717a; text-transform: uppercase; margin-bottom: 0.5rem; }
-        .stat-box .value { font-size: 2rem; font-weight: 700; color: #a78bfa; }
+        .stat-box .label { font-size: 0.625rem; color: #8b949e; text-transform: uppercase; margin-bottom: 0.25rem; }
+        .stat-box .value { font-size: 1.5rem; font-weight: 600; color: #f0f6fc; }
 
         @media (max-width: 768px) {
             body { padding: 1rem; }
-            .stats-row { flex-direction: column; gap: 1rem; }
-            .data-table { font-size: 0.8rem; }
+            .stats-row { flex-direction: column; gap: 0.75rem; }
+            .data-table { font-size: 0.625rem; }
         }
     </style>
 </head>
@@ -505,10 +489,10 @@ var analyticsTemplate = `<!DOCTYPE html>
         {{if .TopCooccurring}}
         <div class="section">
             <h2>Pubkey Co-occurrence Graph</h2>
-            <p style="color: #71717a; margin-bottom: 1rem; font-size: 0.9rem;">
+            <p style="color: #8b949e; margin-bottom: 0.75rem; font-size: 0.75rem;">
                 Nodes represent pubkeys, edges show co-occurrence frequency. Drag to reposition, scroll to zoom.
             </p>
-            <div id="graph-container" style="width: 100%; height: 600px; background: rgba(0,0,0,0.3); border-radius: 12px; overflow: hidden;"></div>
+            <div id="graph-container" style="width: 100%; height: 600px; background: #0d1117; border-radius: 6px; overflow: hidden;"></div>
         </div>
         <script src="https://d3js.org/d3.v7.min.js"></script>
         <script>
@@ -565,7 +549,7 @@ var analyticsTemplate = `<!DOCTYPE html>
                 .selectAll('line')
                 .data(links)
                 .join('line')
-                .attr('stroke', '#a78bfa')
+                .attr('stroke', '#58a6ff')
                 .attr('stroke-opacity', d => 0.2 + (d.value / maxLink) * 0.6)
                 .attr('stroke-width', d => 1 + (d.value / maxLink) * 4);
 
@@ -588,9 +572,9 @@ var analyticsTemplate = `<!DOCTYPE html>
                 .attr('r', d => 6 + (d.weight / maxWeight) * 14)
                 .attr('fill', d => {
                     const t = d.weight / maxWeight;
-                    return d3.interpolateRgb('#8b5cf6', '#e879f9')(t);
+                    return d3.interpolateRgb('#388bfd', '#58a6ff')(t);
                 })
-                .attr('stroke', '#1a1a2e')
+                .attr('stroke', '#0d1117')
                 .attr('stroke-width', 2);
 
             node.append('text')
@@ -598,7 +582,7 @@ var analyticsTemplate = `<!DOCTYPE html>
                 .attr('x', 0)
                 .attr('y', d => -(10 + (d.weight / maxWeight) * 14))
                 .attr('text-anchor', 'middle')
-                .attr('fill', '#a1a1aa')
+                .attr('fill', '#8b949e')
                 .attr('font-size', '10px')
                 .attr('font-family', 'monospace')
                 .style('pointer-events', 'none');
@@ -606,19 +590,19 @@ var analyticsTemplate = `<!DOCTYPE html>
             const tooltip = d3.select('#graph-container')
                 .append('div')
                 .style('position', 'absolute')
-                .style('background', 'rgba(10, 10, 15, 0.95)')
-                .style('border', '1px solid rgba(167, 139, 250, 0.3)')
-                .style('border-radius', '8px')
+                .style('background', '#161b22')
+                .style('border', '1px solid #30363d')
+                .style('border-radius', '6px')
                 .style('padding', '8px 12px')
-                .style('font-size', '12px')
+                .style('font-size', '11px')
                 .style('font-family', 'monospace')
-                .style('color', '#e4e4e7')
+                .style('color', '#c9d1d9')
                 .style('pointer-events', 'none')
                 .style('opacity', 0)
                 .style('z-index', 100);
 
             node.on('mouseover', (event, d) => {
-                tooltip.html(d.full + '<br><span style="color:#a78bfa">Weight: ' + d.weight.toLocaleString() + '</span>')
+                tooltip.html(d.full + '<br><span style="color:#58a6ff">Weight: ' + d.weight.toLocaleString() + '</span>')
                     .style('left', (event.offsetX + 10) + 'px')
                     .style('top', (event.offsetY - 10) + 'px')
                     .style('opacity', 1);

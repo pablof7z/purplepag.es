@@ -17,186 +17,96 @@ var dashboardTemplate = `<!DOCTYPE html>
     <title>purplepag.es - Usage Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #0a0a0f;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
             min-height: 100vh;
             padding: 2rem;
-            color: #e4e4e7;
-            position: relative;
-            overflow-x: hidden;
+            color: #c9d1d9;
         }
-
-        body::before {
-            content: '';
-            position: fixed;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle at 30% 20%, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
-                        radial-gradient(circle at 70% 80%, rgba(217, 70, 239, 0.06) 0%, transparent 50%);
-            animation: drift 30s ease-in-out infinite;
-            pointer-events: none;
-        }
-
-        @keyframes drift {
-            0%, 100% { transform: translate(0, 0) rotate(0deg); }
-            33% { transform: translate(-5%, 5%) rotate(5deg); }
-            66% { transform: translate(5%, -5%) rotate(-5deg); }
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            position: relative;
-            z-index: 1;
-        }
-
-        header {
-            margin-bottom: 3rem;
-            text-align: center;
-        }
-
-        h1 {
-            font-size: 3rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
-            background: linear-gradient(135deg, #a78bfa 0%, #e879f9 50%, #a78bfa 100%);
-            background-size: 200% 100%;
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            animation: shimmer 8s ease-in-out infinite;
-            letter-spacing: -0.02em;
-        }
-
-        @keyframes shimmer {
-            0%, 100% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-        }
-
-        .subtitle {
-            font-size: 1rem;
-            font-weight: 500;
-            color: #a1a1aa;
-            text-transform: uppercase;
-            letter-spacing: 0.15em;
-        }
-
+        .container { max-width: 1400px; margin: 0 auto; }
+        header { margin-bottom: 2rem; border-bottom: 1px solid #21262d; padding-bottom: 1rem; }
+        h1 { font-size: 1.5rem; font-weight: 600; color: #f0f6fc; margin-bottom: 0.25rem; }
+        .subtitle { font-size: 0.875rem; color: #8b949e; }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 3rem;
+            gap: 1rem;
+            margin-bottom: 2rem;
         }
-
         .stat-card {
-            background: linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, rgba(217, 70, 239, 0.02) 100%);
-            border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 24px;
-            padding: 2rem;
-            text-align: center;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1rem;
         }
-
         .stat-label {
             font-size: 0.75rem;
-            font-weight: 600;
-            color: #a1a1aa;
+            color: #8b949e;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 600;
+            color: #f0f6fc;
+            font-variant-numeric: tabular-nums;
+        }
+        .chart-section {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 1.5rem;
             margin-bottom: 1rem;
         }
-
-        .stat-value {
-            font-size: 2.5rem;
-            font-weight: 700;
-            line-height: 1;
-            background: linear-gradient(135deg, #e4e4e7 0%, #a1a1aa 100%);
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .chart-section {
-            background: linear-gradient(135deg, rgba(139, 92, 246, 0.03) 0%, rgba(217, 70, 239, 0.01) 100%);
-            border: 1px solid rgba(167, 139, 250, 0.1);
-            border-radius: 24px;
-            padding: 2rem;
-            margin-bottom: 2rem;
-        }
-
         .chart-section h2 {
-            font-size: 1.5rem;
-            font-weight: 700;
-            margin-bottom: 1.5rem;
-            color: #e4e4e7;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #f0f6fc;
         }
-
-        .chart-container {
-            position: relative;
-            height: 300px;
-        }
-
+        .chart-container { position: relative; height: 300px; }
         .back-link {
             display: inline-block;
-            margin-bottom: 2rem;
-            color: #a78bfa;
+            margin-bottom: 1rem;
+            color: #58a6ff;
             text-decoration: none;
-            font-weight: 500;
-        }
-
-        .back-link:hover {
-            color: #c4b5fd;
-        }
-
-        .toggle-container {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-
-        .toggle-btn {
-            padding: 0.5rem 1rem;
-            background: rgba(139, 92, 246, 0.1);
-            border: 1px solid rgba(167, 139, 250, 0.2);
-            border-radius: 8px;
-            color: #a1a1aa;
-            cursor: pointer;
             font-size: 0.875rem;
-            transition: all 0.2s;
         }
-
+        .back-link:hover { text-decoration: underline; }
+        .toggle-container { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+        .toggle-btn {
+            padding: 0.375rem 0.75rem;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #8b949e;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-family: inherit;
+        }
         .toggle-btn.active {
-            background: rgba(139, 92, 246, 0.3);
-            border-color: rgba(167, 139, 250, 0.5);
-            color: #e4e4e7;
+            background: #388bfd26;
+            border-color: #388bfd;
+            color: #58a6ff;
         }
-
-        .toggle-btn:hover {
-            background: rgba(139, 92, 246, 0.2);
-        }
-
+        .toggle-btn:hover { border-color: #8b949e; }
         .aggregation-toggle {
             display: flex;
             align-items: center;
-            margin-bottom: 2rem;
-            padding: 1rem;
-            background: rgba(139, 92, 246, 0.05);
-            border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 12px;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            padding: 0.75rem;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
         }
-
+        .aggregation-toggle span { font-size: 0.75rem; }
         @media (max-width: 768px) {
             body { padding: 1rem; }
-            h1 { font-size: 2rem; }
-            .stat-value { font-size: 1.75rem; }
+            .stat-value { font-size: 1.5rem; }
         }
     </style>
 </head>
@@ -290,12 +200,12 @@ var dashboardTemplate = `<!DOCTYPE html>
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(167, 139, 250, 0.1)' },
-                    ticks: { color: '#a1a1aa', maxRotation: 45, minRotation: 45 }
+                    grid: { color: '#21262d' },
+                    ticks: { color: '#8b949e', maxRotation: 45, minRotation: 45, font: { family: 'monospace', size: 10 } }
                 },
                 y: {
-                    grid: { color: 'rgba(167, 139, 250, 0.1)' },
-                    ticks: { color: '#a1a1aa' },
+                    grid: { color: '#21262d' },
+                    ticks: { color: '#8b949e', font: { family: 'monospace', size: 10 } },
                     beginAtZero: true
                 }
             }
@@ -309,8 +219,8 @@ var dashboardTemplate = `<!DOCTYPE html>
                 datasets: [{
                     label: 'Total REQs',
                     data: data.totalREQs,
-                    borderColor: '#a78bfa',
-                    backgroundColor: 'rgba(167, 139, 250, 0.1)',
+                    borderColor: '#58a6ff',
+                    backgroundColor: 'rgba(88, 166, 255, 0.1)',
                     fill: true,
                     tension: 0.3
                 }]
@@ -326,8 +236,8 @@ var dashboardTemplate = `<!DOCTYPE html>
                 datasets: [{
                     label: 'Events Served',
                     data: data.eventsServed,
-                    borderColor: '#e879f9',
-                    backgroundColor: 'rgba(232, 121, 249, 0.1)',
+                    borderColor: '#3fb950',
+                    backgroundColor: 'rgba(63, 185, 80, 0.1)',
                     fill: true,
                     tension: 0.3
                 }]
