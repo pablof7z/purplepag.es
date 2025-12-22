@@ -116,13 +116,14 @@ var relaysTemplate = `<!DOCTYPE html>
         }
 
         .relay-url a {
-            color: #a78bfa;
+            color: #fff;
             text-decoration: none;
-            transition: color 0.2s;
+            transition: opacity 0.2s;
         }
 
         .relay-url a:hover {
-            color: #c4b5fd;
+            opacity: 0.8;
+            text-decoration: underline;
         }
 
         .time-ago {
