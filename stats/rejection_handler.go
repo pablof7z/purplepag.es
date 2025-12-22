@@ -378,6 +378,7 @@ var rejectionTemplate = `<!DOCTYPE html>
                 <thead>
                     <tr>
                         <th>Pubkey</th>
+                        <th>Name</th>
                         <th>Kind</th>
                         <th>Count</th>
                         <th>Last Seen</th>
@@ -387,6 +388,7 @@ var rejectionTemplate = `<!DOCTYPE html>
                     {{range .RejectedEventStats}}
                     <tr>
                         <td class="pubkey">{{.PubkeyShort}}</td>
+                        <td>{{if .Name}}{{.Name}}{{else}}<span style="color:#52525b">—</span>{{end}}</td>
                         <td><span class="kind-badge">{{.Kind}}</span></td>
                         <td class="count">{{.Count}}</td>
                         <td class="time-ago">{{.LastSeenAgo}}</td>
@@ -489,6 +491,7 @@ type RejectedEventStatView struct {
 	Kind        int
 	Pubkey      string
 	PubkeyShort string
+	Name        string
 	Count       int64
 	LastSeenAgo string
 }
@@ -559,6 +562,14 @@ func (h *RejectionHandler) HandleRejectionStats() http.HandlerFunc {
 
 		// Get rejected events stats (pubkey + kind)
 		rejectedEventStats, _ := h.storage.GetRejectedEventStats(ctx, 100)
+
+		// Fetch profile names for rejected event pubkeys
+		rejectedPubkeys := make([]string, len(rejectedEventStats))
+		for i, r := range rejectedEventStats {
+			rejectedPubkeys[i] = r.Pubkey
+		}
+		profileNames, _ := h.storage.GetProfileNames(ctx, rejectedPubkeys)
+
 		rejectedEventViews := make([]RejectedEventStatView, 0, len(rejectedEventStats))
 		for _, r := range rejectedEventStats {
 			short := r.Pubkey
@@ -569,6 +580,7 @@ func (h *RejectionHandler) HandleRejectionStats() http.HandlerFunc {
 				Kind:        r.Kind,
 				Pubkey:      r.Pubkey,
 				PubkeyShort: short,
+				Name:        profileNames[r.Pubkey],
 				Count:       r.Count,
 				LastSeenAgo: formatTimeAgo(now.Sub(r.LastSeen)),
 			})
