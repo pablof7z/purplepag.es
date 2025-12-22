@@ -461,8 +461,7 @@ var analyticsTemplate = `<!DOCTYPE html>
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Pubkey</th>
-                        <th>Name</th>
+                        <th>Name / Pubkey</th>
                         <th>Requests</th>
                         <th>Last Requested</th>
                         <th>Status</th>
@@ -471,8 +470,9 @@ var analyticsTemplate = `<!DOCTYPE html>
                 <tbody>
                     {{range .TopRequested}}
                     <tr>
-                        <td class="mono">{{.ShortPubkey}}</td>
-                        <td>{{if .Name}}{{.Name}}{{else}}<span style="color:#52525b">—</span>{{end}}</td>
+                        <td>
+                            {{if .Name}}<strong style="color:#f0f6fc">{{.Name}}</strong><br>{{end}}<span class="mono" style="font-size:0.65rem">{{.ShortPubkey}}</span>
+                        </td>
                         <td class="num">{{.TotalRequests}}</td>
                         <td>{{.LastRequest}}</td>
                         <td>
