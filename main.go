@@ -294,6 +294,12 @@ func main() {
 	mux.HandleFunc("/stats/analytics/purge", analyticsHandler.HandlePurge())
 	mux.HandleFunc("/stats/trusted-sync", trustedSyncHandler.HandleTrustedSyncStats())
 	mux.HandleFunc("/relays", statsTracker.HandleRelays())
+	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "icon.png")
+	})
+	mux.HandleFunc("/icon.svg", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "icon.svg")
+	})
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
