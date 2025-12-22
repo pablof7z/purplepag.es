@@ -240,10 +240,10 @@ var dashboardTemplate = `<!DOCTYPE html>
     <script>
         const statsData = {{.StatsJSON}};
         const labels = statsData.map(s => s.Date);
-        const totalRequests = statsData.map(s => s.TotalRequests);
+        const totalREQs = statsData.map(s => s.TotalREQs);
         const uniqueIPs = statsData.map(s => s.UniqueIPs);
         const eventsServed = statsData.map(s => s.EventsServed);
-        const avgEventsPerIP = statsData.map(s => s.UniqueIPs > 0 ? Math.round(s.EventsServed / s.UniqueIPs) : 0);
+        const avgEventsPerREQ = statsData.map(s => s.TotalREQs > 0 ? Math.round(s.EventsServed / s.TotalREQs) : 0);
 
         const chartOptions = {
             responsive: true,
@@ -264,14 +264,14 @@ var dashboardTemplate = `<!DOCTYPE html>
             }
         };
 
-        const requestsCtx = document.getElementById('requestsChart').getContext('2d');
-        const requestsChart = new Chart(requestsCtx, {
+        const reqsCtx = document.getElementById('reqsChart').getContext('2d');
+        const reqsChart = new Chart(reqsCtx, {
             type: 'line',
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Total Requests',
-                    data: totalRequests,
+                    label: 'Total REQs',
+                    data: totalREQs,
                     borderColor: '#a78bfa',
                     backgroundColor: 'rgba(167, 139, 250, 0.1)',
                     fill: true,
@@ -298,18 +298,18 @@ var dashboardTemplate = `<!DOCTYPE html>
             options: chartOptions
         });
 
-        function toggleRequestsView(view) {
+        function toggleREQsView(view) {
             document.querySelectorAll('.chart-section:nth-child(4) .toggle-btn').forEach(btn => btn.classList.remove('active'));
             event.target.classList.add('active');
 
             if (view === 'total') {
-                requestsChart.data.datasets[0].data = totalRequests;
-                requestsChart.data.datasets[0].label = 'Total Requests';
+                reqsChart.data.datasets[0].data = totalREQs;
+                reqsChart.data.datasets[0].label = 'Total REQs';
             } else {
-                requestsChart.data.datasets[0].data = uniqueIPs;
-                requestsChart.data.datasets[0].label = 'Unique IPs';
+                reqsChart.data.datasets[0].data = uniqueIPs;
+                reqsChart.data.datasets[0].label = 'Unique IPs';
             }
-            requestsChart.update();
+            reqsChart.update();
         }
 
         function toggleEventsView(view) {
@@ -320,8 +320,8 @@ var dashboardTemplate = `<!DOCTYPE html>
                 eventsChart.data.datasets[0].data = eventsServed;
                 eventsChart.data.datasets[0].label = 'Events Served';
             } else {
-                eventsChart.data.datasets[0].data = avgEventsPerIP;
-                eventsChart.data.datasets[0].label = 'Avg Events per IP';
+                eventsChart.data.datasets[0].data = avgEventsPerREQ;
+                eventsChart.data.datasets[0].label = 'Avg Events per REQ';
             }
             eventsChart.update();
         }
