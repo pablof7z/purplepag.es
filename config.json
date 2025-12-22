@@ -1,0 +1,42 @@
+{
+  "relay": {
+    "name": "purplepag.es",
+    "description": "A specialized relay for profile and relay list events",
+    "pubkey": "",
+    "contact": "",
+    "icon": "",
+    "supported_nips": [1, 11, 42, 51],
+    "software": "https://github.com/purplepages/relay",
+    "version": "0.1.0"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3335
+  },
+  "storage": {
+    "backend": "sqlite3",
+    "path": "./data/purplepages.db"
+  },
+  "allowed_kinds": [0, 3, 10000, 10001, 10002, 10003, 10004, 10005, 10006, 10007, 10009, 10012, 10015, 10020, 10030, 10050, 10101, 10102, 30000, 30002, 30003, 30004, 30005, 30007, 30015, 30030, 30063, 30267, 31924, 39089, 39092],
+  "sync": {
+    "enabled": true,
+    "relays": [
+      "wss://purplepag.es"
+    ],
+    "kinds": [10002]
+  },
+  "profile_hydration": {
+    "enabled": true,
+    "min_followers": 10,
+    "retry_after_hours": 24,
+    "interval_minutes": 5,
+    "batch_size": 50
+  },
+  "limits": {
+    "max_subscriptions": 50,
+    "max_filters": 10,
+    "max_limit": 2000,
+    "max_event_tags": 2000,
+    "max_content_length": 131072
+  }
+}

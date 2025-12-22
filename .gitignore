@@ -1,0 +1,5 @@
+purplepages
+data/
+*.db
+*.log
+.DS_Store
