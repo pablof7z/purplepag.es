@@ -213,6 +213,7 @@ var relaysTemplate = `<!DOCTYPE html>
                 <thead>
                     <tr>
                         <th>Relay URL</th>
+                        <th>Pubkeys</th>
                         <th>First Seen</th>
                         <th>Last Sync</th>
                         <th>Success Rate</th>
@@ -224,6 +225,7 @@ var relaysTemplate = `<!DOCTYPE html>
                     {{range .Relays}}
                     <tr>
                         <td class="relay-url"><a href="{{.URL}}" target="_blank" rel="noopener">{{.URL}}</a></td>
+                        <td class="events-count">{{.PubkeyCount}}</td>
                         <td class="time-ago">{{.FirstSeenAgo}}</td>
                         <td class="time-ago">{{.LastSyncAgo}}</td>
                         <td class="success-rate {{.SuccessRateClass}}">{{.SuccessRate}}</td>
@@ -252,6 +254,7 @@ type RelayInfo struct {
 	SuccessRate       string
 	SuccessRateClass  string
 	EventsContributed int64
+	PubkeyCount       int64
 	StatusClass       string
 	StatusText        string
 }
@@ -311,6 +314,7 @@ func (s *Stats) HandleRelays() http.HandlerFunc {
 				SuccessRate:       successRateStr,
 				SuccessRateClass:  successRateClass,
 				EventsContributed: relay.EventsContributed,
+				PubkeyCount:       relay.PubkeyCount,
 				StatusClass:       statusClass,
 				StatusText:        statusText,
 			})

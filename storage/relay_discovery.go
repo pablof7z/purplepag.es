@@ -18,6 +18,7 @@ type DiscoveredRelay struct {
 	SyncSuccesses     int64
 	EventsContributed int64
 	IsActive          bool
+	PubkeyCount       int64
 }
 
 func (s *Storage) getDBConn() *sqlx.DB {
@@ -142,10 +143,24 @@ func (s *Storage) GetRelayStats(ctx context.Context) ([]DiscoveredRelay, error) 
 		return nil, nil
 	}
 
+	// Count pubkeys per relay from kind 10002 events
 	rows, err := dbConn.QueryContext(ctx, `
-		SELECT url, first_seen, last_sync, sync_attempts, sync_successes, events_contributed, is_active
-		FROM discovered_relays
-		ORDER BY events_contributed DESC
+		WITH relay_pubkey_counts AS (
+			SELECT
+				json_extract(tag.value, '$[1]') as relay_url,
+				COUNT(DISTINCT event.pubkey) as pubkey_count
+			FROM event, json_each(event.tags) as tag
+			WHERE event.kind = 10002
+			  AND json_extract(tag.value, '$[0]') = 'r'
+			  AND json_extract(tag.value, '$[1]') IS NOT NULL
+			GROUP BY relay_url
+		)
+		SELECT
+			dr.url, dr.first_seen, dr.last_sync, dr.sync_attempts, dr.sync_successes,
+			dr.events_contributed, dr.is_active, COALESCE(rpc.pubkey_count, 0)
+		FROM discovered_relays dr
+		LEFT JOIN relay_pubkey_counts rpc ON dr.url = rpc.relay_url
+		ORDER BY COALESCE(rpc.pubkey_count, 0) DESC, dr.events_contributed DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -158,7 +173,7 @@ func (s *Storage) GetRelayStats(ctx context.Context) ([]DiscoveredRelay, error) 
 		var firstSeen, lastSync int64
 		var isActive int
 
-		err := rows.Scan(&r.URL, &firstSeen, &lastSync, &r.SyncAttempts, &r.SyncSuccesses, &r.EventsContributed, &isActive)
+		err := rows.Scan(&r.URL, &firstSeen, &lastSync, &r.SyncAttempts, &r.SyncSuccesses, &r.EventsContributed, &isActive, &r.PubkeyCount)
 		if err != nil {
 			return nil, err
 		}
