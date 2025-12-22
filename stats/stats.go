@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/purplepages/relay/storage"
+	"github.com/pablof7z/purplepag.es/storage"
 )
 
 type Stats struct {

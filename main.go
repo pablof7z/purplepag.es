@@ -19,13 +19,13 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip11"
 	"github.com/nbd-wtf/go-nostr/nip77"
-	"github.com/purplepages/relay/analytics"
-	"github.com/purplepages/relay/config"
-	"github.com/purplepages/relay/pages"
-	relay2 "github.com/purplepages/relay/relay"
-	"github.com/purplepages/relay/stats"
-	"github.com/purplepages/relay/storage"
-	"github.com/purplepages/relay/sync"
+	"github.com/pablof7z/purplepag.es/analytics"
+	"github.com/pablof7z/purplepag.es/config"
+	"github.com/pablof7z/purplepag.es/pages"
+	relay2 "github.com/pablof7z/purplepag.es/relay"
+	"github.com/pablof7z/purplepag.es/stats"
+	"github.com/pablof7z/purplepag.es/storage"
+	"github.com/pablof7z/purplepag.es/sync"
 )
 
 func main() {

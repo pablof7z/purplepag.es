@@ -1,4 +1,4 @@
-module github.com/purplepages/relay
+module github.com/pablof7z/purplepag.es
 
 go 1.24.1
 

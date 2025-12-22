@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/purplepages/relay/storage"
+	"github.com/pablof7z/purplepag.es/storage"
 )
 
 type Handler struct {

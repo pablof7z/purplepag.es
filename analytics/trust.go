@@ -5,7 +5,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/purplepages/relay/storage"
+	"github.com/pablof7z/purplepag.es/storage"
 )
 
 type TrustAnalyzer struct {

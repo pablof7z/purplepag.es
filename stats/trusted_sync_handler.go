@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/purplepages/relay/storage"
+	"github.com/pablof7z/purplepag.es/storage"
 )
 
 var trustedSyncTemplate = `<!DOCTYPE html>

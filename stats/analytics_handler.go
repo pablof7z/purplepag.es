@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/purplepages/relay/analytics"
-	"github.com/purplepages/relay/storage"
+	"github.com/pablof7z/purplepag.es/analytics"
+	"github.com/pablof7z/purplepag.es/storage"
 )
 
 type AnalyticsHandler struct {
