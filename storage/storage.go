@@ -124,9 +124,11 @@ func (s *Storage) CountEvents(ctx context.Context, kind int) (int64, error) {
 	return int64(len(events)), nil
 }
 
-func (s *Storage) Close() error {
-	if closer, ok := s.db.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
+func (s *Storage) Close() {
+	s.db.Close()
+}
+
+// EventStore returns the underlying eventstore.Store for direct access
+func (s *Storage) EventStore() eventstore.Store {
+	return s.db
 }

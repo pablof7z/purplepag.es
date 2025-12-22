@@ -10,12 +10,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/fiatjaf/eventstore"
 	"github.com/fiatjaf/khatru"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip11"
+	"github.com/nbd-wtf/go-nostr/nip77"
 	"github.com/purplepages/relay/analytics"
 	"github.com/purplepages/relay/config"
 	"github.com/purplepages/relay/pages"
@@ -26,6 +29,12 @@ import (
 )
 
 func main() {
+	// Check for subcommands before parsing flags
+	if len(os.Args) > 1 && os.Args[1] == "sync" {
+		runSyncCommand(os.Args[2:])
+		return
+	}
+
 	port := flag.Int("port", 0, "Override port from config (use 9999 for sync-only test mode)")
 	importFile := flag.String("import", "", "Import events from JSONL file and exit")
 	testHydrator := flag.Bool("test-hydrator", false, "Run profile hydrator once and show results")
@@ -75,6 +84,10 @@ func main() {
 
 	if err := store.InitAnalyticsSchema(); err != nil {
 		log.Fatalf("Failed to initialize analytics schema: %v", err)
+	}
+
+	if err := store.InitTrustedSyncSchema(); err != nil {
+		log.Fatalf("Failed to initialize trusted sync schema: %v", err)
 	}
 
 	if *importFile != "" {
@@ -251,6 +264,21 @@ func main() {
 		}()
 	}
 
+	var trustedSyncer *relay2.TrustedSyncer
+	if !cfg.TrustedSync.Disabled {
+		trustedSyncer = relay2.NewTrustedSyncer(
+			store,
+			trustAnalyzer,
+			cfg.TrustedSync.Kinds,
+			cfg.TrustedSync.BatchSize,
+			cfg.TrustedSync.TimeoutSeconds,
+		)
+		go func() {
+			time.Sleep(6 * time.Minute) // Wait for trust analyzer to run first
+			trustedSyncer.Start(ctx, cfg.TrustedSync.IntervalMinutes)
+		}()
+	}
+
 	pageHandler := pages.NewHandler(store)
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
@@ -288,10 +316,109 @@ func main() {
 	if hydrator != nil {
 		hydrator.Stop()
 	}
+	if trustedSyncer != nil {
+		trustedSyncer.Stop()
+	}
 
 	if err := server.Shutdown(context.Background()); err != nil {
 		log.Printf("Server shutdown error: %v", err)
 	}
+}
+
+func runSyncCommand(args []string) {
+	syncFlags := flag.NewFlagSet("sync", flag.ExitOnError)
+	kinds := syncFlags.String("k", "", "Comma-separated list of kinds to sync (e.g., -k 0,3,10002)")
+	direction := syncFlags.String("d", "down", "Sync direction: down (pull from relay), up (push to relay), both")
+	syncFlags.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: purplepages sync [options] <relay-url>\n\n")
+		fmt.Fprintf(os.Stderr, "Trigger a negentropy sync with a relay.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		syncFlags.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  purplepages sync -k 3 relay.example.com\n")
+		fmt.Fprintf(os.Stderr, "  purplepages sync -k 0,3,10002 wss://relay.example.com\n")
+		fmt.Fprintf(os.Stderr, "  purplepages sync -k 10002 -d both relay.example.com\n")
+	}
+
+	if err := syncFlags.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	if syncFlags.NArg() < 1 {
+		syncFlags.Usage()
+		os.Exit(1)
+	}
+
+	relayURL := syncFlags.Arg(0)
+	if !strings.HasPrefix(relayURL, "ws://") && !strings.HasPrefix(relayURL, "wss://") {
+		relayURL = "wss://" + relayURL
+	}
+
+	// Parse kinds
+	var kindsToSync []int
+	if *kinds != "" {
+		for _, k := range strings.Split(*kinds, ",") {
+			k = strings.TrimSpace(k)
+			var kind int
+			if _, err := fmt.Sscanf(k, "%d", &kind); err != nil {
+				log.Fatalf("Invalid kind: %s", k)
+			}
+			kindsToSync = append(kindsToSync, kind)
+		}
+	}
+
+	// Parse direction
+	var dir nip77.Direction
+	switch *direction {
+	case "down":
+		dir = nip77.Down
+	case "up":
+		dir = nip77.Up
+	case "both":
+		dir = nip77.Both
+	default:
+		log.Fatalf("Invalid direction: %s (use: down, up, both)", *direction)
+	}
+
+	// Load config
+	cfg, err := config.Load("config.json")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// If no kinds specified, use allowed kinds from config
+	if len(kindsToSync) == 0 {
+		kindsToSync = cfg.AllowedKinds
+		log.Printf("No kinds specified, using all allowed kinds: %v", kindsToSync)
+	}
+
+	// Open storage
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path)
+	if err != nil {
+		log.Fatalf("Failed to initialize storage: %v", err)
+	}
+	defer store.Close()
+
+	// Get the underlying eventstore for nip77
+	wrapper := eventstore.RelayWrapper{Store: store.EventStore()}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	dirLabel := map[nip77.Direction]string{nip77.Down: "pulling from", nip77.Up: "pushing to", nip77.Both: "syncing with"}[dir]
+
+	for _, kind := range kindsToSync {
+		filter := nostr.Filter{Kinds: []int{kind}}
+		log.Printf("Negentropy sync: %s %s for kind %d...", dirLabel, relayURL, kind)
+
+		if err := nip77.NegentropySync(ctx, wrapper, relayURL, filter, dir); err != nil {
+			log.Printf("Failed to sync kind %d: %v", kind, err)
+			continue
+		}
+		log.Printf("Kind %d sync complete", kind)
+	}
+
+	log.Println("Sync complete")
 }
 
 func importEventsFromJSONL(store *storage.Storage, filePath string) error {

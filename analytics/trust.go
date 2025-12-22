@@ -208,6 +208,16 @@ func (t *TrustAnalyzer) GetTrustedCount() int {
 	return len(t.trustedSet)
 }
 
+func (t *TrustAnalyzer) GetTrustedPubkeys() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	pubkeys := make([]string, 0, len(t.trustedSet))
+	for pk := range t.trustedSet {
+		pubkeys = append(pubkeys, pk)
+	}
+	return pubkeys
+}
+
 func (t *TrustAnalyzer) GetSpamCandidates(ctx context.Context, limit int) ([]storage.SpamCandidate, error) {
 	return t.storage.GetSpamCandidates(ctx, limit)
 }

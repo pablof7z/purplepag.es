@@ -7,6 +7,7 @@ import (
 
 	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/jmoiron/sqlx"
+	"github.com/nbd-wtf/go-nostr"
 )
 
 type DiscoveredRelay struct {
@@ -384,6 +385,131 @@ type PubkeyEventKinds struct {
 	HasKind0      bool
 	HasKind3      bool
 	HasKind10002  bool
+}
+
+func (s *Storage) InitTrustedSyncSchema() error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	schema := `
+	CREATE TABLE IF NOT EXISTS trusted_sync_state (
+		pubkey TEXT PRIMARY KEY,
+		last_synced_at INTEGER NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_trusted_sync_last_synced ON trusted_sync_state(last_synced_at);
+	`
+
+	_, err := dbConn.Exec(schema)
+	return err
+}
+
+type TrustedSyncState struct {
+	Pubkey       string
+	LastSyncedAt int64
+}
+
+func (s *Storage) GetTrustedSyncQueue(ctx context.Context, pubkeys []string, limit int) ([]TrustedSyncState, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	if len(pubkeys) == 0 {
+		return nil, nil
+	}
+
+	// Query returns pubkeys ordered by last_synced_at (nulls/missing first via LEFT JOIN)
+	query := `
+		WITH input_pubkeys(pk) AS (
+			SELECT value FROM json_each(?)
+		)
+		SELECT ip.pk, COALESCE(ts.last_synced_at, 0) as last_synced_at
+		FROM input_pubkeys ip
+		LEFT JOIN trusted_sync_state ts ON ip.pk = ts.pubkey
+		ORDER BY last_synced_at ASC
+		LIMIT ?
+	`
+
+	// Convert pubkeys to JSON array for json_each
+	pubkeysJSON := "["
+	for i, pk := range pubkeys {
+		if i > 0 {
+			pubkeysJSON += ","
+		}
+		pubkeysJSON += fmt.Sprintf(`"%s"`, pk)
+	}
+	pubkeysJSON += "]"
+
+	rows, err := dbConn.QueryContext(ctx, query, pubkeysJSON, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var states []TrustedSyncState
+	for rows.Next() {
+		var state TrustedSyncState
+		if err := rows.Scan(&state.Pubkey, &state.LastSyncedAt); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+
+	return states, rows.Err()
+}
+
+func (s *Storage) UpdateTrustedSyncState(ctx context.Context, pubkey string) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO trusted_sync_state (pubkey, last_synced_at)
+		VALUES (?, ?)
+		ON CONFLICT(pubkey) DO UPDATE SET last_synced_at = excluded.last_synced_at
+	`, pubkey, now)
+
+	return err
+}
+
+func (s *Storage) GetPubkeyRelayList(ctx context.Context, pubkey string) ([]string, error) {
+	// Get the latest kind 10002 event for this pubkey and extract write relay URLs
+	events, err := s.QueryEvents(ctx, nostr.Filter{
+		Kinds:   []int{10002},
+		Authors: []string{pubkey},
+		Limit:   1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(events) == 0 {
+		return nil, nil
+	}
+
+	var writeRelays []string
+	for _, tag := range events[0].Tags {
+		if len(tag) < 2 || tag[0] != "r" {
+			continue
+		}
+
+		url := tag[1]
+
+		// Check if it's a write relay (no marker = both, "write" = write only)
+		// "read" marker means read-only, skip those
+		if len(tag) >= 3 && tag[2] == "read" {
+			continue
+		}
+
+		writeRelays = append(writeRelays, url)
+	}
+
+	return writeRelays, nil
 }
 
 func (s *Storage) CheckPubkeyEventKinds(ctx context.Context, pubkeys []string) (map[string]PubkeyEventKinds, error) {
