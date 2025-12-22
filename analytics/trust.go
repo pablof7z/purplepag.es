@@ -20,12 +20,26 @@ func NewTrustAnalyzer(store *storage.Storage, clusterDetector *ClusterDetector, 
 	if minTrustedFollowers <= 0 {
 		minTrustedFollowers = 10
 	}
-	return &TrustAnalyzer{
+	t := &TrustAnalyzer{
 		storage:             store,
 		clusterDetector:     clusterDetector,
 		trustedSet:          make(map[string]bool),
 		minTrustedFollowers: minTrustedFollowers,
 	}
+
+	// Load trusted pubkeys from database on startup
+	ctx := context.Background()
+	pubkeys, err := store.GetTrustedPubkeys(ctx)
+	if err != nil {
+		log.Printf("analytics: failed to load trusted pubkeys from database: %v", err)
+	} else if len(pubkeys) > 0 {
+		for _, pk := range pubkeys {
+			t.trustedSet[pk] = true
+		}
+		log.Printf("analytics: loaded %d trusted pubkeys from database", len(pubkeys))
+	}
+
+	return t
 }
 
 func (t *TrustAnalyzer) AnalyzeTrust(ctx context.Context) error {
@@ -79,6 +93,15 @@ func (t *TrustAnalyzer) AnalyzeTrust(ctx context.Context) error {
 	t.mu.Lock()
 	t.trustedSet = trusted
 	t.mu.Unlock()
+
+	// Persist trusted pubkeys to database for use by other components (e.g., event archiving)
+	trustedList := make([]string, 0, len(trusted))
+	for pk := range trusted {
+		trustedList = append(trustedList, pk)
+	}
+	if err := t.storage.SetTrustedPubkeys(ctx, trustedList); err != nil {
+		log.Printf("analytics: failed to persist trusted pubkeys: %v", err)
+	}
 
 	clusters, err := t.storage.GetBotClusters(ctx, 1000)
 	if err != nil {

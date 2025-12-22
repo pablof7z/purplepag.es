@@ -128,6 +128,12 @@ func (s *Storage) InitAnalyticsSchema() error {
 		last_seen INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_rejected_req_count ON rejected_req_kinds(count DESC);
+
+	-- Trusted pubkeys (persisted from trust analysis)
+	CREATE TABLE IF NOT EXISTS trusted_pubkeys (
+		pubkey TEXT PRIMARY KEY,
+		trusted_at INTEGER NOT NULL
+	);
 	`
 
 	_, err := dbConn.Exec(schema)
@@ -864,4 +870,75 @@ func (s *Storage) GetRejectedREQTotals(ctx context.Context) (totalCount int64, u
 	`).Scan(&totalCount, &uniqueKinds)
 
 	return
+}
+
+// SetTrustedPubkeys replaces the trusted pubkeys set
+func (s *Storage) SetTrustedPubkeys(ctx context.Context, pubkeys []string) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	tx, err := dbConn.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Clear existing trusted pubkeys
+	if _, err := tx.ExecContext(ctx, `DELETE FROM trusted_pubkeys`); err != nil {
+		return err
+	}
+
+	// Insert new trusted pubkeys
+	now := time.Now().Unix()
+	for _, pubkey := range pubkeys {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO trusted_pubkeys (pubkey, trusted_at) VALUES (?, ?)
+		`, pubkey, now); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// IsPubkeyTrusted checks if a pubkey is in the trusted set
+func (s *Storage) IsPubkeyTrusted(ctx context.Context, pubkey string) bool {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return false
+	}
+
+	var count int
+	err := dbConn.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM trusted_pubkeys WHERE pubkey = ?
+	`, pubkey).Scan(&count)
+
+	return err == nil && count > 0
+}
+
+// GetTrustedPubkeys returns all trusted pubkeys from the database
+func (s *Storage) GetTrustedPubkeys(ctx context.Context) ([]string, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `SELECT pubkey FROM trusted_pubkeys`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pubkeys []string
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		pubkeys = append(pubkeys, pubkey)
+	}
+
+	return pubkeys, rows.Err()
 }

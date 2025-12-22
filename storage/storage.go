@@ -107,8 +107,13 @@ func isReplaceableKind(kind int) bool {
 	return kind == 0 || kind == 3 || (kind >= 10000 && kind < 20000)
 }
 
-// archiveOldVersion archives the current version before replacement
+// archiveOldVersion archives the current version before replacement (only for trusted pubkeys)
 func (s *Storage) archiveOldVersion(ctx context.Context, newEvt *nostr.Event) {
+	// Only archive history for trusted pubkeys
+	if !s.IsPubkeyTrusted(ctx, newEvt.PubKey) {
+		return
+	}
+
 	// Query for existing event
 	existing, err := s.QueryEvents(ctx, nostr.Filter{
 		Kinds:   []int{newEvt.Kind},
