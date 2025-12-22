@@ -42,6 +42,22 @@ func (s *Stats) RecordEventRejected() {
 	s.rejectedEvents++
 }
 
+func (s *Stats) RecordEventRejectedForKind(ctx context.Context, kind int, pubkey string) {
+	s.mu.Lock()
+	s.rejectedEvents++
+	s.mu.Unlock()
+
+	s.storage.RecordRejectedEvent(ctx, kind, pubkey)
+}
+
+func (s *Stats) RecordRejectedREQ(ctx context.Context, kind int) {
+	s.storage.RecordRejectedREQ(ctx, kind)
+}
+
+func (s *Stats) RecordREQKind(ctx context.Context, kind int) {
+	s.storage.RecordREQKind(ctx, kind)
+}
+
 func (s *Stats) RecordConnection() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

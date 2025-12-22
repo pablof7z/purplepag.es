@@ -131,7 +131,7 @@ func main() {
 
 	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
 		if !cfg.IsKindAllowed(event.Kind) {
-			statsTracker.RecordEventRejected()
+			statsTracker.RecordEventRejectedForKind(ctx, event.Kind, event.PubKey)
 			return true, fmt.Sprintf("kind %d is not allowed", event.Kind)
 		}
 		if len(event.Tags) > cfg.Limits.MaxEventTags {
@@ -168,6 +168,14 @@ func main() {
 
 	relay.QueryEvents = append(relay.QueryEvents, func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 		analyticsTracker.RecordREQ(filter)
+
+		// Track REQ kinds for stats
+		for _, kind := range filter.Kinds {
+			statsTracker.RecordREQKind(ctx, kind)
+			if !cfg.IsKindAllowed(kind) {
+				statsTracker.RecordRejectedREQ(ctx, kind)
+			}
+		}
 
 		events, err := store.QueryEvents(ctx, filter)
 		if err != nil {
@@ -297,6 +305,7 @@ func main() {
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
 	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 	dashboardHandler := stats.NewDashboardHandler(store)
+	rejectionHandler := stats.NewRejectionHandler(store)
 
 	// Password protection middleware for stats pages
 	requireStatsAuth := func(next http.HandlerFunc) http.HandlerFunc {
@@ -325,6 +334,7 @@ func main() {
 	mux.HandleFunc("/stats/analytics/purge", requireStatsAuth(analyticsHandler.HandlePurge()))
 	mux.HandleFunc("/stats/trusted-sync", requireStatsAuth(trustedSyncHandler.HandleTrustedSyncStats()))
 	mux.HandleFunc("/stats/dashboard", requireStatsAuth(dashboardHandler.HandleDashboard()))
+	mux.HandleFunc("/stats/rejections", requireStatsAuth(rejectionHandler.HandleRejectionStats()))
 	mux.HandleFunc("/relays", requireStatsAuth(statsTracker.HandleRelays()))
 	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "icon.png")

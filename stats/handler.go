@@ -336,6 +336,14 @@ var statsTemplate = `<!DOCTYPE html>
                     <div class="stat-subvalue">requests & events served over time →</div>
                 </div>
             </a>
+
+            <a href="/stats/rejections" style="text-decoration: none; color: inherit;">
+                <div class="stat-card" style="cursor: pointer;">
+                    <div class="stat-label">Rejection Stats</div>
+                    <div class="stat-value">View</div>
+                    <div class="stat-subvalue">rejected events & unsupported REQs →</div>
+                </div>
+            </a>
         </div>
 
         <div class="section">

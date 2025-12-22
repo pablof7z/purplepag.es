@@ -92,6 +92,42 @@ func (s *Storage) InitAnalyticsSchema() error {
 		purged INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX IF NOT EXISTS idx_spam_purged ON spam_candidates(purged);
+
+	-- Rejected events by unsupported kind
+	CREATE TABLE IF NOT EXISTS rejected_events_by_kind (
+		kind INTEGER NOT NULL,
+		pubkey TEXT NOT NULL,
+		count INTEGER NOT NULL DEFAULT 0,
+		last_seen INTEGER NOT NULL,
+		PRIMARY KEY (kind, pubkey)
+	);
+	CREATE INDEX IF NOT EXISTS idx_rejected_events_kind ON rejected_events_by_kind(kind);
+	CREATE INDEX IF NOT EXISTS idx_rejected_events_count ON rejected_events_by_kind(count DESC);
+
+	-- REQ stats by kind (all REQs, for tracking over time)
+	CREATE TABLE IF NOT EXISTS req_kind_stats (
+		kind INTEGER PRIMARY KEY,
+		total_requests INTEGER NOT NULL DEFAULT 0,
+		last_request INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_req_kind_stats_total ON req_kind_stats(total_requests DESC);
+
+	-- REQ stats by kind per day (for time series)
+	CREATE TABLE IF NOT EXISTS req_kind_stats_daily (
+		date TEXT NOT NULL,
+		kind INTEGER NOT NULL,
+		request_count INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (date, kind)
+	);
+	CREATE INDEX IF NOT EXISTS idx_req_kind_daily_date ON req_kind_stats_daily(date);
+
+	-- Rejected REQs for unsupported kinds
+	CREATE TABLE IF NOT EXISTS rejected_req_kinds (
+		kind INTEGER PRIMARY KEY,
+		count INTEGER NOT NULL DEFAULT 0,
+		last_seen INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_rejected_req_count ON rejected_req_kinds(count DESC);
 	`
 
 	_, err := dbConn.Exec(schema)
@@ -515,4 +551,317 @@ func (s *Storage) DeleteEventsForPubkeys(ctx context.Context, pubkeys []string) 
 	}
 
 	return totalDeleted, nil
+}
+
+// RecordRejectedEvent records an event that was rejected due to unsupported kind
+func (s *Storage) RecordRejectedEvent(ctx context.Context, kind int, pubkey string) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO rejected_events_by_kind (kind, pubkey, count, last_seen)
+		VALUES (?, ?, 1, ?)
+		ON CONFLICT(kind, pubkey) DO UPDATE SET
+			count = count + 1,
+			last_seen = excluded.last_seen
+	`, kind, pubkey, now)
+
+	return err
+}
+
+type RejectedEventStat struct {
+	Kind     int
+	Pubkey   string
+	Count    int64
+	LastSeen time.Time
+}
+
+// GetRejectedEventStats returns stats on rejected events, optionally filtered
+func (s *Storage) GetRejectedEventStats(ctx context.Context, limit int) ([]RejectedEventStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT kind, pubkey, count, last_seen
+		FROM rejected_events_by_kind
+		ORDER BY count DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []RejectedEventStat
+	for rows.Next() {
+		var stat RejectedEventStat
+		var lastSeen int64
+		if err := rows.Scan(&stat.Kind, &stat.Pubkey, &stat.Count, &lastSeen); err != nil {
+			return nil, err
+		}
+		stat.LastSeen = time.Unix(lastSeen, 0)
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+type RejectedKindSummary struct {
+	Kind         int
+	TotalCount   int64
+	UniquePubkeys int64
+	LastSeen     time.Time
+}
+
+// GetRejectedEventsByKind returns aggregated stats per kind
+func (s *Storage) GetRejectedEventsByKind(ctx context.Context, limit int) ([]RejectedKindSummary, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT kind, SUM(count) as total_count, COUNT(DISTINCT pubkey) as unique_pubkeys, MAX(last_seen) as last_seen
+		FROM rejected_events_by_kind
+		GROUP BY kind
+		ORDER BY total_count DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []RejectedKindSummary
+	for rows.Next() {
+		var stat RejectedKindSummary
+		var lastSeen int64
+		if err := rows.Scan(&stat.Kind, &stat.TotalCount, &stat.UniquePubkeys, &lastSeen); err != nil {
+			return nil, err
+		}
+		stat.LastSeen = time.Unix(lastSeen, 0)
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+// RecordRejectedREQ records a REQ for an unsupported kind
+func (s *Storage) RecordRejectedREQ(ctx context.Context, kind int) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO rejected_req_kinds (kind, count, last_seen)
+		VALUES (?, 1, ?)
+		ON CONFLICT(kind) DO UPDATE SET
+			count = count + 1,
+			last_seen = excluded.last_seen
+	`, kind, now)
+
+	return err
+}
+
+type RejectedREQStat struct {
+	Kind     int
+	Count    int64
+	LastSeen time.Time
+}
+
+// GetRejectedREQStats returns stats on rejected REQs by kind
+func (s *Storage) GetRejectedREQStats(ctx context.Context, limit int) ([]RejectedREQStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT kind, count, last_seen
+		FROM rejected_req_kinds
+		ORDER BY count DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []RejectedREQStat
+	for rows.Next() {
+		var stat RejectedREQStat
+		var lastSeen int64
+		if err := rows.Scan(&stat.Kind, &stat.Count, &lastSeen); err != nil {
+			return nil, err
+		}
+		stat.LastSeen = time.Unix(lastSeen, 0)
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+// RecordREQKind records a REQ for any kind (for overall stats)
+func (s *Storage) RecordREQKind(ctx context.Context, kind int) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	date := time.Now().Format("2006-01-02")
+
+	// Update total stats
+	_, err := dbConn.ExecContext(ctx, `
+		INSERT INTO req_kind_stats (kind, total_requests, last_request)
+		VALUES (?, 1, ?)
+		ON CONFLICT(kind) DO UPDATE SET
+			total_requests = total_requests + 1,
+			last_request = excluded.last_request
+	`, kind, now)
+	if err != nil {
+		return err
+	}
+
+	// Update daily stats
+	_, err = dbConn.ExecContext(ctx, `
+		INSERT INTO req_kind_stats_daily (date, kind, request_count)
+		VALUES (?, ?, 1)
+		ON CONFLICT(date, kind) DO UPDATE SET
+			request_count = request_count + 1
+	`, date, kind)
+
+	return err
+}
+
+type REQKindStat struct {
+	Kind          int
+	TotalRequests int64
+	LastRequest   time.Time
+}
+
+// GetREQKindStats returns overall REQ stats by kind
+func (s *Storage) GetREQKindStats(ctx context.Context, limit int) ([]REQKindStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	rows, err := dbConn.QueryContext(ctx, `
+		SELECT kind, total_requests, last_request
+		FROM req_kind_stats
+		ORDER BY total_requests DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []REQKindStat
+	for rows.Next() {
+		var stat REQKindStat
+		var lastRequest int64
+		if err := rows.Scan(&stat.Kind, &stat.TotalRequests, &lastRequest); err != nil {
+			return nil, err
+		}
+		stat.LastRequest = time.Unix(lastRequest, 0)
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+type REQKindDailyStat struct {
+	Date         string
+	Kind         int
+	RequestCount int64
+}
+
+// GetREQKindDailyStats returns REQ stats by kind per day
+func (s *Storage) GetREQKindDailyStats(ctx context.Context, days int, kinds []int) ([]REQKindDailyStat, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	startDate := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+
+	var rows interface {
+		Next() bool
+		Scan(...interface{}) error
+		Close() error
+		Err() error
+	}
+	var err error
+
+	if len(kinds) > 0 {
+		query := `
+			SELECT date, kind, request_count
+			FROM req_kind_stats_daily
+			WHERE date >= ?
+			ORDER BY date DESC, request_count DESC
+		`
+		rows, err = dbConn.QueryContext(ctx, query, startDate)
+	} else {
+		rows, err = dbConn.QueryContext(ctx, `
+			SELECT date, kind, request_count
+			FROM req_kind_stats_daily
+			WHERE date >= ?
+			ORDER BY date DESC, request_count DESC
+		`, startDate)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []REQKindDailyStat
+	for rows.Next() {
+		var stat REQKindDailyStat
+		if err := rows.Scan(&stat.Date, &stat.Kind, &stat.RequestCount); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+
+	return stats, rows.Err()
+}
+
+// GetRejectedEventTotals returns total counts for rejected events
+func (s *Storage) GetRejectedEventTotals(ctx context.Context) (totalCount int64, uniqueKinds int64, uniquePubkeys int64, err error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0, 0, 0, nil
+	}
+
+	err = dbConn.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(count), 0), COUNT(DISTINCT kind), COUNT(DISTINCT pubkey)
+		FROM rejected_events_by_kind
+	`).Scan(&totalCount, &uniqueKinds, &uniquePubkeys)
+
+	return
+}
+
+// GetRejectedREQTotals returns total counts for rejected REQs
+func (s *Storage) GetRejectedREQTotals(ctx context.Context) (totalCount int64, uniqueKinds int64, err error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0, 0, nil
+	}
+
+	err = dbConn.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(count), 0), COUNT(DISTINCT kind)
+		FROM rejected_req_kinds
+	`).Scan(&totalCount, &uniqueKinds)
+
+	return
 }
