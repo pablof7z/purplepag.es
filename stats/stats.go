@@ -2,6 +2,7 @@ package stats
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -138,4 +139,34 @@ func (s *Stats) RecordEventsServed(ctx context.Context, ip string, eventsCount i
 	if err := s.storage.RecordDailyStats(ctx, ip, eventsCount); err != nil {
 		// Silently ignore errors for now
 	}
+}
+
+// FormatBytes converts a byte count to a human-readable string.
+func FormatBytes(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// FormatNumber converts a large number to a human-readable string with K/M suffixes.
+func FormatNumber(n int64) string {
+	if n >= 1000000 {
+		return fmt.Sprintf("%.2fM", float64(n)/1000000)
+	} else if n >= 1000 {
+		return fmt.Sprintf("%.2fK", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
 }

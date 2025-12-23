@@ -307,34 +307,39 @@ var timecapsuleTemplate = `<!DOCTYPE html>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
-            background: #0a0a0f;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+            background: #0d1117;
             min-height: 100vh;
             padding: 2rem;
-            color: #e4e4e7;
+            color: #c9d1d9;
         }
         .container { max-width: 1000px; margin: 0 auto; }
         .back-link {
             display: inline-block;
             margin-bottom: 1.5rem;
-            color: #a78bfa;
+            color: #58a6ff;
             text-decoration: none;
+            font-size: 0.875rem;
         }
-        .back-link:hover { color: #c4b5fd; }
+        .back-link:hover {
+            text-decoration: underline;
+        }
         header {
             margin-bottom: 2rem;
             text-align: center;
+            border-bottom: 1px solid #21262d;
+            padding-bottom: 1rem;
         }
         h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
+            font-size: 2rem;
+            font-weight: 600;
             margin-bottom: 0.5rem;
-            background: linear-gradient(135deg, #a78bfa 0%, #e879f9 100%);
-            background-clip: text;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #f0f6fc;
         }
-        .subtitle { color: #71717a; font-size: 1rem; }
+        .subtitle {
+            color: #8b949e;
+            font-size: 0.875rem;
+        }
         .stats-row {
             display: flex;
             gap: 1rem;
@@ -342,58 +347,67 @@ var timecapsuleTemplate = `<!DOCTYPE html>
             justify-content: center;
         }
         .stat-box {
-            background: rgba(167, 139, 250, 0.1);
-            border: 1px solid rgba(167, 139, 250, 0.2);
-            border-radius: 12px;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
             padding: 1rem 2rem;
             text-align: center;
         }
         .stat-box .value {
             font-size: 2rem;
-            font-weight: 700;
-            color: #a78bfa;
+            font-weight: 600;
+            color: #58a6ff;
+            font-variant-numeric: tabular-nums;
         }
         .stat-box .label {
             font-size: 0.75rem;
-            color: #71717a;
+            color: #8b949e;
             text-transform: uppercase;
+            letter-spacing: 0.05em;
         }
         .search-box {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(167, 139, 250, 0.2);
-            border-radius: 12px;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
             padding: 1.5rem;
             margin-bottom: 2rem;
         }
         .search-box input {
             width: 100%;
             padding: 0.75rem 1rem;
-            font-size: 1rem;
-            background: rgba(0,0,0,0.3);
-            border: 1px solid rgba(167, 139, 250, 0.3);
-            border-radius: 8px;
-            color: #e4e4e7;
-            font-family: 'SF Mono', monospace;
+            font-size: 0.875rem;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
         }
         .search-box input:focus {
             outline: none;
-            border-color: #a78bfa;
+            border-color: #58a6ff;
+        }
+        .search-box input::placeholder {
+            color: #8b949e;
         }
         .search-box button {
             margin-top: 0.75rem;
             padding: 0.5rem 1.5rem;
-            background: #a78bfa;
+            background: #238636;
             border: none;
-            border-radius: 8px;
-            color: #0a0a0f;
+            border-radius: 6px;
+            color: #ffffff;
             font-weight: 600;
             cursor: pointer;
+            font-size: 0.875rem;
+            font-family: inherit;
         }
-        .search-box button:hover { background: #c4b5fd; }
+        .search-box button:hover {
+            background: #2ea043;
+        }
         .delta-card {
-            background: rgba(255,255,255,0.02);
-            border: 1px solid rgba(167, 139, 250, 0.15);
-            border-radius: 16px;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
             padding: 1.5rem;
             margin-bottom: 1rem;
         }
@@ -403,7 +417,7 @@ var timecapsuleTemplate = `<!DOCTYPE html>
             align-items: center;
             margin-bottom: 1rem;
             padding-bottom: 0.75rem;
-            border-bottom: 1px solid rgba(167, 139, 250, 0.1);
+            border-bottom: 1px solid #21262d;
         }
         .delta-user {
             display: flex;
@@ -412,12 +426,12 @@ var timecapsuleTemplate = `<!DOCTYPE html>
         }
         .delta-name {
             font-weight: 600;
-            color: #f4f4f5;
+            color: #f0f6fc;
         }
         .delta-pubkey {
-            font-family: 'SF Mono', monospace;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
             font-size: 0.75rem;
-            color: #71717a;
+            color: #8b949e;
         }
         .delta-meta {
             text-align: right;
@@ -425,39 +439,41 @@ var timecapsuleTemplate = `<!DOCTYPE html>
         .delta-kind {
             display: inline-block;
             padding: 0.25rem 0.75rem;
-            background: rgba(167, 139, 250, 0.2);
+            background: #388bfd26;
+            border: 1px solid #388bfd;
             border-radius: 20px;
             font-size: 0.75rem;
-            color: #a78bfa;
+            color: #58a6ff;
             margin-bottom: 0.25rem;
         }
         .delta-time {
             font-size: 0.75rem;
-            color: #71717a;
+            color: #8b949e;
         }
         .change-list { list-style: none; }
         .change-item {
             padding: 0.5rem 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
+            border-bottom: 1px solid #21262d;
             display: flex;
             align-items: flex-start;
             gap: 0.75rem;
+            font-size: 0.875rem;
         }
         .change-item:last-child { border-bottom: none; }
         .change-field {
             min-width: 100px;
             font-weight: 500;
-            color: #a1a1aa;
+            color: #8b949e;
             font-size: 0.875rem;
         }
         .change-values { flex: 1; }
         .old-value {
-            color: #f87171;
+            color: #f85149;
             text-decoration: line-through;
             font-size: 0.875rem;
         }
         .new-value {
-            color: #4ade80;
+            color: #3fb950;
             font-size: 0.875rem;
         }
         .follow-action {
@@ -465,46 +481,52 @@ var timecapsuleTemplate = `<!DOCTYPE html>
             align-items: center;
             gap: 0.5rem;
             padding: 0.25rem 0.75rem;
-            border-radius: 20px;
+            border-radius: 6px;
             font-size: 0.8rem;
             margin: 0.25rem;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
         }
         .follow-action.followed {
-            background: rgba(74, 222, 128, 0.15);
-            color: #4ade80;
+            background: rgba(63, 185, 80, 0.15);
+            border: 1px solid #3fb950;
+            color: #3fb950;
         }
         .follow-action.unfollowed {
-            background: rgba(248, 113, 113, 0.15);
-            color: #f87171;
+            background: rgba(248, 81, 73, 0.15);
+            border: 1px solid #f85149;
+            color: #f85149;
         }
         .relay-action {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
             padding: 0.25rem 0.75rem;
-            border-radius: 8px;
+            border-radius: 6px;
             font-size: 0.75rem;
-            font-family: 'SF Mono', monospace;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
             margin: 0.25rem;
         }
         .relay-action.added {
-            background: rgba(74, 222, 128, 0.15);
-            color: #4ade80;
+            background: rgba(63, 185, 80, 0.15);
+            border: 1px solid #3fb950;
+            color: #3fb950;
         }
         .relay-action.removed {
-            background: rgba(248, 113, 113, 0.15);
-            color: #f87171;
+            background: rgba(248, 81, 73, 0.15);
+            border: 1px solid #f85149;
+            color: #f85149;
         }
         .empty-state {
             text-align: center;
             padding: 3rem;
-            color: #71717a;
+            color: #8b949e;
+            font-size: 0.875rem;
         }
         .section-title {
-            font-size: 1.25rem;
+            font-size: 1.125rem;
             font-weight: 600;
             margin-bottom: 1.5rem;
-            color: #e4e4e7;
+            color: #f0f6fc;
         }
         @media (max-width: 768px) {
             body { padding: 1rem; }
@@ -598,7 +620,7 @@ var timecapsuleTemplate = `<!DOCTYPE html>
                 {{end}}
 
                 {{if and (not .ProfileChanges) (not .ContactChanges) (not .RelayChanges)}}
-                <div style="color: #71717a; font-style: italic;">Initial version</div>
+                <div style="color: #8b949e; font-style: italic;">Initial version</div>
                 {{end}}
             </div>
             {{end}}
@@ -616,7 +638,7 @@ var timecapsuleTemplate = `<!DOCTYPE html>
                     <div class="delta-user">
                         <div>
                             {{if .Name}}<div class="delta-name">{{.Name}}</div>{{end}}
-                            <a href="/timecapsule?pubkey={{.PubKey}}" class="delta-pubkey" style="color: #a78bfa;">{{.PubKeyShort}}</a>
+                            <a href="/timecapsule?pubkey={{.PubKey}}" class="delta-pubkey" style="color: #58a6ff; text-decoration: none;">{{.PubKeyShort}}</a>
                         </div>
                     </div>
                     <div class="delta-meta">

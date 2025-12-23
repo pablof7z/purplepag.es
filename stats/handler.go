@@ -158,9 +158,25 @@ var statsTemplate = `<!DOCTYPE html>
 
             <a href="/stats/communities" style="text-decoration: none; color: inherit;">
                 <div class="stat-card" style="cursor: pointer;">
-                    <div class="stat-label">Social Graph</div>
+                    <div class="stat-label">Community Clusters</div>
                     <div class="stat-value">View</div>
-                    <div class="stat-subvalue">community clusters visualization →</div>
+                    <div class="stat-subvalue">community visualization →</div>
+                </div>
+            </a>
+
+            <a href="/stats/social" style="text-decoration: none; color: inherit;">
+                <div class="stat-card" style="cursor: pointer;">
+                    <div class="stat-label">Social Analytics</div>
+                    <div class="stat-value">View</div>
+                    <div class="stat-subvalue">mutes, interests, trends →</div>
+                </div>
+            </a>
+
+            <a href="/stats/network" style="text-decoration: none; color: inherit;">
+                <div class="stat-card" style="cursor: pointer;">
+                    <div class="stat-label">Network Connections</div>
+                    <div class="stat-value">View</div>
+                    <div class="stat-subvalue">unique IPs, requests, events served →</div>
                 </div>
             </a>
         </div>

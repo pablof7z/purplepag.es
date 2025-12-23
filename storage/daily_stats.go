@@ -60,25 +60,25 @@ func (s *Storage) RecordDailyStats(ctx context.Context, ip string, eventsServed 
 	hour := now.Format("2006-01-02 15")
 
 	// Record daily stats
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO daily_requests (date, ip, request_count, events_served)
 		VALUES (?, ?, 1, ?)
 		ON CONFLICT(date, ip) DO UPDATE SET
-			request_count = request_count + 1,
-			events_served = events_served + excluded.events_served
-	`, date, ip, eventsServed)
+			request_count = daily_requests.request_count + 1,
+			events_served = daily_requests.events_served + excluded.events_served
+	`), date, ip, eventsServed)
 	if err != nil {
 		return err
 	}
 
 	// Record hourly stats
-	_, err = dbConn.ExecContext(ctx, `
+	_, err = dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO hourly_requests (hour, ip, request_count, events_served)
 		VALUES (?, ?, 1, ?)
 		ON CONFLICT(hour, ip) DO UPDATE SET
-			request_count = request_count + 1,
-			events_served = events_served + excluded.events_served
-	`, hour, ip, eventsServed)
+			request_count = hourly_requests.request_count + 1,
+			events_served = hourly_requests.events_served + excluded.events_served
+	`), hour, ip, eventsServed)
 
 	return err
 }
@@ -89,17 +89,20 @@ func (s *Storage) GetDailyStats(ctx context.Context, days int) ([]DailyStats, er
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	// Calculate the cutoff date in Go (works for both SQLite and PostgreSQL)
+	cutoffDate := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT
 			date,
 			SUM(request_count) as total_reqs,
 			COUNT(DISTINCT ip) as unique_ips,
 			SUM(events_served) as events_served
 		FROM daily_requests
-		WHERE date >= date('now', '-' || ? || ' days')
+		WHERE date >= ?
 		GROUP BY date
 		ORDER BY date ASC
-	`, days)
+	`), cutoffDate)
 	if err != nil {
 		return nil, err
 	}
@@ -123,17 +126,20 @@ func (s *Storage) GetHourlyStats(ctx context.Context, hours int) ([]HourlyStats,
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	// Calculate the cutoff hour in Go (works for both SQLite and PostgreSQL)
+	cutoffHour := time.Now().Add(-time.Duration(hours) * time.Hour).Format("2006-01-02 15")
+
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT
 			hour,
 			SUM(request_count) as total_reqs,
 			COUNT(DISTINCT ip) as unique_ips,
 			SUM(events_served) as events_served
 		FROM hourly_requests
-		WHERE hour >= strftime('%Y-%m-%d %H', datetime('now', '-' || ? || ' hours'))
+		WHERE hour >= ?
 		GROUP BY hour
 		ORDER BY hour ASC
-	`, hours)
+	`), cutoffHour)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +169,7 @@ func (s *Storage) GetTopIPs(ctx context.Context, limit int) ([]TopIP, error) {
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT
 			ip,
 			SUM(request_count) as total_reqs,
@@ -172,7 +178,7 @@ func (s *Storage) GetTopIPs(ctx context.Context, limit int) ([]TopIP, error) {
 		GROUP BY ip
 		ORDER BY events_served DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -196,13 +202,16 @@ func (s *Storage) GetEventsServedLast24Hours(ctx context.Context, ip string) (in
 		return 0, nil
 	}
 
+	// Calculate the cutoff hour in Go (works for both SQLite and PostgreSQL)
+	cutoffHour := time.Now().Add(-24 * time.Hour).Format("2006-01-02 15")
+
 	var total int64
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT COALESCE(SUM(events_served), 0)
 		FROM hourly_requests
 		WHERE ip = ?
-		  AND hour >= strftime('%Y-%m-%d %H', datetime('now', '-24 hours'))
-	`, ip).Scan(&total)
+		  AND hour >= ?
+	`), ip, cutoffHour).Scan(&total)
 
 	return total, err
 }
@@ -217,14 +226,14 @@ func (s *Storage) GetTodayStats(ctx context.Context) (*DailyStats, error) {
 	var stat DailyStats
 	stat.Date = today
 
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT
 			COALESCE(SUM(request_count), 0),
 			COALESCE(COUNT(DISTINCT ip), 0),
 			COALESCE(SUM(events_served), 0)
 		FROM daily_requests
 		WHERE date = ?
-	`, today).Scan(&stat.TotalREQs, &stat.UniqueIPs, &stat.EventsServed)
+	`), today).Scan(&stat.TotalREQs, &stat.UniqueIPs, &stat.EventsServed)
 
 	if err != nil {
 		return nil, err

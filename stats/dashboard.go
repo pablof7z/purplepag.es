@@ -1,14 +1,26 @@
 package stats
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 
 	"github.com/pablof7z/purplepag.es/storage"
 )
+
+var (
+	dashboardTmpl *template.Template
+)
+
+func init() {
+	var err error
+	dashboardTmpl, err = template.New("dashboard").Parse(dashboardTemplate)
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse dashboard template: %v", err))
+	}
+}
 
 var dashboardTemplate = `<!DOCTYPE html>
 <html lang="en">
@@ -32,7 +44,7 @@ var dashboardTemplate = `<!DOCTYPE html>
         .subtitle { font-size: 0.875rem; color: #8b949e; }
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(5, 1fr);
             gap: 1rem;
             margin-bottom: 2rem;
         }
@@ -41,6 +53,25 @@ var dashboardTemplate = `<!DOCTYPE html>
             border: 1px solid #21262d;
             border-radius: 6px;
             padding: 1rem;
+        }
+        .stat-card-link {
+            text-decoration: none;
+            color: inherit;
+        }
+        .stat-card-clickable {
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .stat-card-clickable:hover {
+            border-color: #58a6ff;
+        }
+        .stat-value-small {
+            font-size: 1.5rem;
+        }
+        .growth-label {
+            font-size: 0.75rem;
+            color: #8b949e;
+            margin-top: 0.5rem;
         }
         .stat-label {
             font-size: 0.75rem;
@@ -123,6 +154,9 @@ var dashboardTemplate = `<!DOCTYPE html>
         @media (max-width: 768px) {
             body { padding: 1rem; }
             .stat-value { font-size: 1.5rem; }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -148,10 +182,17 @@ var dashboardTemplate = `<!DOCTYPE html>
                 <div class="stat-label">Today's Events Served</div>
                 <div class="stat-value">{{.TodayEventsServed}}</div>
             </div>
+            <a href="/stats/storage" class="stat-card-link">
+                <div class="stat-card stat-card-clickable">
+                    <div class="stat-label">Event Data Size</div>
+                    <div class="stat-value stat-value-small">{{.StorageSize}}</div>
+                    <div class="growth-label">{{.StorageGrowth}} this month</div>
+                </div>
+            </a>
         </div>
 
         <div class="aggregation-toggle">
-            <span style="color: #71717a; margin-right: 1rem;">Aggregation:</span>
+            <span style="color: #8b949e; margin-right: 1rem;">Aggregation:</span>
             <button class="toggle-btn active" onclick="setAggregation('day')">Daily (30d)</button>
             <button class="toggle-btn" onclick="setAggregation('hour')">Hourly (72h)</button>
         </div>
@@ -344,14 +385,17 @@ var dashboardTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+// DashboardHandler handles HTTP requests for the usage dashboard.
 type DashboardHandler struct {
 	storage *storage.Storage
 }
 
+// NewDashboardHandler creates a new dashboard handler with the given storage backend.
 func NewDashboardHandler(storage *storage.Storage) *DashboardHandler {
 	return &DashboardHandler{storage: storage}
 }
 
+// TopIPDisplay represents a single IP address entry in the top IPs table.
 type TopIPDisplay struct {
 	IP           string
 	PTR          string
@@ -359,6 +403,7 @@ type TopIPDisplay struct {
 	EventsServed int64
 }
 
+// DashboardData contains all data needed to render the dashboard template.
 type DashboardData struct {
 	TodayREQs         int64
 	TodayUniqueIPs    int64
@@ -366,11 +411,14 @@ type DashboardData struct {
 	DailyStatsJSON    template.JS
 	HourlyStatsJSON   template.JS
 	TopIPs            []TopIPDisplay
+	StorageSize       string
+	StorageGrowth     string
 }
 
+// HandleDashboard returns an HTTP handler function that renders the usage dashboard.
 func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.Background()
+		ctx := r.Context()
 
 		todayStats, err := h.storage.GetTodayStats(ctx)
 		if err != nil || todayStats == nil {
@@ -413,6 +461,22 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 		dailyStatsJSON, _ := json.Marshal(dailyStats)
 		hourlyStatsJSON, _ := json.Marshal(hourlyStats)
 
+		// Fetch storage stats
+		storageSize := "N/A"
+		storageGrowth := "—"
+		if currentStorage, err := h.storage.GetCurrentStorageInfo(ctx); err == nil && currentStorage != nil {
+			storageSize = FormatBytes(currentStorage.EventTableBytes)
+
+			// Get 30-day growth
+			if growth, err := h.storage.GetStorageGrowth(ctx, 30); err == nil && growth != 0 {
+				if growth > 0 {
+					storageGrowth = fmt.Sprintf("+%.1f%%", growth)
+				} else {
+					storageGrowth = fmt.Sprintf("%.1f%%", growth)
+				}
+			}
+		}
+
 		data := DashboardData{
 			TodayREQs:         todayStats.TotalREQs,
 			TodayUniqueIPs:    todayStats.UniqueIPs,
@@ -420,16 +484,12 @@ func (h *DashboardHandler) HandleDashboard() http.HandlerFunc {
 			DailyStatsJSON:    template.JS(dailyStatsJSON),
 			HourlyStatsJSON:   template.JS(hourlyStatsJSON),
 			TopIPs:            topIPDisplays,
-		}
-
-		tmpl, err := template.New("dashboard").Parse(dashboardTemplate)
-		if err != nil {
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
+			StorageSize:       storageSize,
+			StorageGrowth:     storageGrowth,
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.Execute(w, data); err != nil {
+		if err := dashboardTmpl.Execute(w, data); err != nil {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 	}

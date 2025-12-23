@@ -34,9 +34,10 @@ type Community struct {
 }
 
 type CommunityMember struct {
-	Pubkey        string
-	Name          string
-	FollowerCount int
+	Pubkey        string `json:"pubkey"`
+	Name          string `json:"name"`
+	Picture       string `json:"picture"`
+	FollowerCount int    `json:"follower_count"`
 }
 
 type CommunityEdge struct {
@@ -279,22 +280,14 @@ func (d *CommunityDetector) buildCommunityGraph(ctx context.Context, g *louvainG
 		communityMembers[comID] = append(communityMembers[comID], pubkey)
 	}
 
-	// Count followers for each pubkey (within the graph)
-	followerCount := make(map[string]int)
-	for _, neighbors := range g.adj {
-		for neighbor := range neighbors {
-			followerCount[g.nodes[neighbor]]++
-		}
+	// Get real follower counts from database (minimum 1 follower)
+	followerCount, err := d.storage.GetFollowerCounts(ctx, 1)
+	if err != nil {
+		log.Printf("community: failed to get follower counts: %v", err)
+		followerCount = make(map[string]int)
 	}
 
-	// Get profile names
-	allPubkeys := make([]string, 0, len(communities))
-	for pk := range communities {
-		allPubkeys = append(allPubkeys, pk)
-	}
-	names, _ := d.storage.GetProfileNames(ctx, allPubkeys)
-
-	// Build community list
+	// Build community list first to identify top candidates
 	var comList []Community
 	for comID, members := range communityMembers {
 		if len(members) < d.minCommunity {
@@ -306,27 +299,46 @@ func (d *CommunityDetector) buildCommunityGraph(ctx context.Context, g *louvainG
 			return followerCount[members[i]] > followerCount[members[j]]
 		})
 
-		// Top 5 members
+		comList = append(comList, Community{
+			ID:      comID,
+			Members: members,
+			Size:    len(members),
+		})
+	}
+
+	// Collect top member pubkeys to fetch profiles for
+	topPubkeys := make([]string, 0)
+	for _, com := range comList {
 		topN := 5
-		if len(members) < topN {
-			topN = len(members)
+		if len(com.Members) < topN {
+			topN = len(com.Members)
+		}
+		for i := 0; i < topN; i++ {
+			topPubkeys = append(topPubkeys, com.Members[i])
+		}
+	}
+
+	// Get profile info (names + pictures) for top members only
+	profiles, _ := d.storage.GetProfileInfo(ctx, topPubkeys)
+
+	// Now build top members with profile info
+	for i := range comList {
+		topN := 5
+		if len(comList[i].Members) < topN {
+			topN = len(comList[i].Members)
 		}
 		topMembers := make([]CommunityMember, topN)
-		for i := 0; i < topN; i++ {
-			pk := members[i]
-			topMembers[i] = CommunityMember{
+		for j := 0; j < topN; j++ {
+			pk := comList[i].Members[j]
+			profile := profiles[pk]
+			topMembers[j] = CommunityMember{
 				Pubkey:        pk,
-				Name:          names[pk],
+				Name:          profile.Name,
+				Picture:       profile.Picture,
 				FollowerCount: followerCount[pk],
 			}
 		}
-
-		comList = append(comList, Community{
-			ID:         comID,
-			Members:    members,
-			Size:       len(members),
-			TopMembers: topMembers,
-		})
+		comList[i].TopMembers = topMembers
 	}
 
 	// Sort by size descending

@@ -277,7 +277,16 @@ var communitiesTemplate = `<!DOCTYPE html>
         }
         .tooltip .member {
             color: #c9d1d9;
-            margin: 2px 0;
+            margin: 4px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .member-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            object-fit: cover;
         }
 
         .legend {
@@ -453,6 +462,28 @@ var communitiesTemplate = `<!DOCTYPE html>
             .attr('class', 'link')
             .attr('stroke-width', d => linkScale(d.weight));
 
+        // Create defs for avatar clip paths and patterns
+        const defs = svg.append('defs');
+
+        // Create patterns for each node with an avatar
+        graphData.nodes.forEach((d, i) => {
+            const topMember = d.topMembers[0];
+            if (topMember && topMember.picture) {
+                const patternId = 'avatar-' + i;
+                const pattern = defs.append('pattern')
+                    .attr('id', patternId)
+                    .attr('width', 1)
+                    .attr('height', 1)
+                    .attr('patternContentUnits', 'objectBoundingBox');
+                pattern.append('image')
+                    .attr('href', topMember.picture)
+                    .attr('width', 1)
+                    .attr('height', 1)
+                    .attr('preserveAspectRatio', 'xMidYMid slice');
+                d.patternId = patternId;
+            }
+        });
+
         // Draw nodes
         const node = g.append('g')
             .selectAll('.node')
@@ -466,7 +497,7 @@ var communitiesTemplate = `<!DOCTYPE html>
 
         node.append('circle')
             .attr('r', d => sizeScale(d.size))
-            .attr('fill', d => getColor(d.size))
+            .attr('fill', d => d.patternId ? 'url(#' + d.patternId + ')' : getColor(d.size))
             .on('mouseover', showTooltip)
             .on('mouseout', hideTooltip)
             .on('click', (event, d) => {
@@ -484,7 +515,10 @@ var communitiesTemplate = `<!DOCTYPE html>
             let membersHtml = '<div class="members"><strong>Top Members:</strong>';
             d.topMembers.forEach(m => {
                 const name = m.name || m.pubkey.substring(0, 12) + '...';
-                membersHtml += '<div class="member">' + name + ' (' + m.follower_count + ' followers)</div>';
+                const avatarHtml = m.picture
+                    ? '<img src="' + m.picture + '" class="member-avatar" onerror="this.style.display=\'none\'">'
+                    : '';
+                membersHtml += '<div class="member">' + avatarHtml + '<span>' + name + ' (' + m.follower_count.toLocaleString() + ' followers)</span></div>';
             });
             membersHtml += '</div>';
 
