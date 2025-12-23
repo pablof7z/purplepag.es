@@ -35,6 +35,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "analytics" {
+		runAnalyticsWorker()
+		return
+	}
+
 	port := flag.Int("port", 0, "Override port from config (use 9999 for sync-only test mode)")
 	importFile := flag.String("import", "", "Import events from JSONL file and exit")
 	testHydrator := flag.Bool("test-hydrator", false, "Run profile hydrator once and show results")
@@ -68,7 +73,7 @@ func main() {
 
 	testMode := cfg.Server.Port == 9999
 
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path)
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
@@ -98,6 +103,10 @@ func main() {
 		log.Fatalf("Failed to initialize event history schema: %v", err)
 	}
 
+	if err := store.InitStorageStatsSchema(); err != nil {
+		log.Fatalf("Failed to initialize storage stats schema: %v", err)
+	}
+
 	if *importFile != "" {
 		if err := importEventsFromJSONL(store, *importFile); err != nil {
 			log.Fatalf("Failed to import events: %v", err)
@@ -110,7 +119,6 @@ func main() {
 	analyticsTracker := analytics.NewTracker(store)
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, 10)
-	communityDetector := analytics.NewCommunityDetector(store)
 	discovery := relay2.NewDiscovery(store)
 	if err := discovery.BackfillDiscoveredRelays(context.Background()); err != nil {
 		log.Printf("Warning: failed to backfill discovered relays: %v", err)
@@ -157,44 +165,44 @@ func main() {
 		return false, ""
 	})
 
-	// Rate limit check: require AUTH if IP has served too many events in 24 hours
+	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
+		if len(filter.Kinds) == 0 {
+			return true, "filters must specify at least one kind"
+		}
+		return false, ""
+	})
+
 	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
 		ip := khatru.GetIP(ctx)
 		eventsServed, err := store.GetEventsServedLast24Hours(ctx, ip)
 		if err != nil {
-			log.Printf("rate limit: failed to get events served for IP %s: %v", ip, err)
-			return false, "" // Allow on error
+			return false, ""
 		}
-
 		if eventsServed < int64(cfg.Limits.EventsPerDayLimit) {
-			return false, "" // Under limit, allow
+			return false, ""
 		}
-
-		// Over limit - check if authenticated
 		authedPubkey := khatru.GetAuthed(ctx)
 		if authedPubkey == "" {
-			return true, fmt.Sprintf("auth-required: rate limit exceeded (%d events in 24h, limit %d). Please authenticate with a pubkey that has at least %d trusted followers.",
-				eventsServed, cfg.Limits.EventsPerDayLimit, cfg.Limits.MinTrustedFollowers)
+			return true, fmt.Sprintf("auth-required: rate limit exceeded")
 		}
-
-		// Authenticated - check if they have enough trusted followers
 		trustedFollowers, err := trustAnalyzer.GetTrustedFollowerCount(ctx, authedPubkey)
 		if err != nil {
-			log.Printf("rate limit: failed to get trusted followers for %s: %v", authedPubkey, err)
 			return true, "error checking trusted follower count"
 		}
-
 		if trustedFollowers < cfg.Limits.MinTrustedFollowers {
-			return true, fmt.Sprintf("rate limit exceeded. Your pubkey has %d trusted followers, minimum required is %d.",
-				trustedFollowers, cfg.Limits.MinTrustedFollowers)
+			return true, fmt.Sprintf("rate limit exceeded")
 		}
-
-		return false, "" // Authenticated with enough trusted followers, allow
+		return false, ""
 	})
 
 	relay.StoreEvent = append(relay.StoreEvent, func(ctx context.Context, event *nostr.Event) error {
+		start := time.Now()
 		if err := store.SaveEvent(ctx, event); err != nil {
 			return err
+		}
+		elapsed := time.Since(start)
+		if elapsed > 100*time.Millisecond {
+			log.Printf("SLOW StoreEvent: kind=%d tags=%d elapsed=%v pubkey=%s", event.Kind, len(event.Tags), elapsed, event.PubKey[:8])
 		}
 		statsTracker.RecordEventAccepted(event.Kind)
 		return nil
@@ -209,15 +217,33 @@ func main() {
 	relay.QueryEvents = append(relay.QueryEvents, func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
 		analyticsTracker.RecordREQ(filter)
 
-		// Track REQ kinds for stats
+		// Track REQ kinds for stats and filter out disallowed kinds
+		allowedKinds := make([]int, 0, len(filter.Kinds))
 		for _, kind := range filter.Kinds {
 			statsTracker.RecordREQKind(ctx, kind)
 			if !cfg.IsKindAllowed(kind) {
 				statsTracker.RecordRejectedREQ(ctx, kind)
+			} else {
+				allowedKinds = append(allowedKinds, kind)
 			}
 		}
 
+		// If no allowed kinds remain after filtering, return empty immediately
+		if len(filter.Kinds) > 0 && len(allowedKinds) == 0 {
+			ch := make(chan *nostr.Event)
+			close(ch)
+			return ch, nil
+		}
+
+		// Update filter with only allowed kinds
+		filter.Kinds = allowedKinds
+
+		start := time.Now()
 		events, err := store.QueryEvents(ctx, filter)
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			log.Printf("SLOW QueryEvents: kinds=%v authors=%d tags=%d limit=%d elapsed=%v results=%d",
+				filter.Kinds, len(filter.Authors), len(filter.Tags), filter.Limit, elapsed, len(events))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -245,6 +271,10 @@ func main() {
 
 	relay.DeleteEvent = append(relay.DeleteEvent, func(ctx context.Context, event *nostr.Event) error {
 		return store.DeleteEvent(ctx, event)
+	})
+
+	relay.CountEvents = append(relay.CountEvents, func(ctx context.Context, filter nostr.Filter) (int64, error) {
+		return store.CountEvents(ctx, filter)
 	})
 
 	relay.OnConnect = append(relay.OnConnect, func(ctx context.Context) {
@@ -278,9 +308,7 @@ func main() {
 				log.Printf("Sync error: %v", err)
 			}
 		}()
-	}
-
-	if testMode {
+	} else if testMode {
 		log.Println("Test mode enabled but sync disabled in config")
 		os.Exit(0)
 	}
@@ -290,26 +318,33 @@ func main() {
 
 	analyticsTracker.Start(ctx)
 
+	log.Println("Relay: heavy analytics disabled in relay process - run './purplepages analytics' separately")
+
+	// Record daily storage snapshots
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		// Run immediately if no trusted pubkeys, otherwise wait 5 minutes
-		if trustAnalyzer.GetTrustedCount() == 0 {
-			log.Println("No trusted pubkeys found, running trust analysis immediately")
-			clusterDetector.Detect(ctx)
-			trustAnalyzer.AnalyzeTrust(ctx)
-			communityDetector.DetectCommunities(ctx)
+		// Wait 5 minutes before first snapshot to ensure database is fully initialized
+		log.Println("Storage tracking: waiting 5 minutes before first snapshot to ensure DB is initialized")
+		time.Sleep(5 * time.Minute)
+
+		if err := store.RecordDailyStorageSnapshot(ctx); err != nil {
+			log.Printf("Failed to record initial storage snapshot: %v", err)
 		} else {
-			time.Sleep(5 * time.Minute)
+			log.Println("Recorded initial storage snapshot")
 		}
+
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+
 		for {
-			clusterDetector.Detect(ctx)
-			trustAnalyzer.AnalyzeTrust(ctx)
-			communityDetector.DetectCommunities(ctx)
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if err := store.RecordDailyStorageSnapshot(ctx); err != nil {
+					log.Printf("Failed to record storage snapshot: %v", err)
+				} else {
+					log.Println("Recorded daily storage snapshot")
+				}
 			}
 		}
 	}()
@@ -354,8 +389,11 @@ func main() {
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
 	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 	dashboardHandler := stats.NewDashboardHandler(store)
+	storageHandler := stats.NewStorageHandler(store)
 	rejectionHandler := stats.NewRejectionHandler(store)
 	communitiesHandler := stats.NewCommunitiesHandler(store)
+	socialHandler := stats.NewSocialHandler(store)
+	networkHandler := stats.NewNetworkHandler(store)
 	timecapsuleHandler := pages.NewTimecapsuleHandler(store)
 
 	// Password protection middleware for stats pages
@@ -386,8 +424,11 @@ func main() {
 	mux.HandleFunc("/stats/analytics/purge", requireStatsAuth(analyticsHandler.HandlePurge()))
 	mux.HandleFunc("/stats/trusted-sync", requireStatsAuth(trustedSyncHandler.HandleTrustedSyncStats()))
 	mux.HandleFunc("/stats/dashboard", requireStatsAuth(dashboardHandler.HandleDashboard()))
+	mux.HandleFunc("/stats/storage", requireStatsAuth(storageHandler.HandleStorage()))
 	mux.HandleFunc("/stats/rejections", requireStatsAuth(rejectionHandler.HandleRejectionStats()))
 	mux.HandleFunc("/stats/communities", requireStatsAuth(communitiesHandler.HandleCommunities()))
+	mux.HandleFunc("/stats/social", requireStatsAuth(socialHandler.HandleSocial()))
+	mux.HandleFunc("/stats/network", requireStatsAuth(networkHandler.HandleNetwork()))
 	mux.HandleFunc("/relays", requireStatsAuth(statsTracker.HandleRelays()))
 	mux.HandleFunc("/icon.png", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "icon.png")
@@ -425,6 +466,80 @@ func main() {
 
 	if err := server.Shutdown(context.Background()); err != nil {
 		log.Printf("Server shutdown error: %v", err)
+	}
+}
+
+func runAnalyticsWorker() {
+	log.Println("Starting analytics worker process")
+
+	cfg, err := config.Load("config.json")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize storage: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.InitAnalyticsSchema(); err != nil {
+		log.Fatalf("Failed to initialize analytics schema: %v", err)
+	}
+
+	clusterDetector := analytics.NewClusterDetector(store)
+	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, cfg.Limits.MinTrustedFollowers)
+	communityDetector := analytics.NewCommunityDetector(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		log.Println("Received shutdown signal, stopping analytics worker...")
+		cancel()
+	}()
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	// Run immediately if no trusted pubkeys, otherwise wait 5 minutes
+	if trustAnalyzer.GetTrustedCount() == 0 {
+		log.Println("No trusted pubkeys found, running trust analysis immediately")
+		start := time.Now()
+		clusterDetector.Detect(ctx)
+		log.Printf("clusterDetector.Detect took %v", time.Since(start))
+		start = time.Now()
+		trustAnalyzer.AnalyzeTrust(ctx)
+		log.Printf("trustAnalyzer.AnalyzeTrust took %v", time.Since(start))
+		start = time.Now()
+		communityDetector.DetectCommunities(ctx)
+		log.Printf("communityDetector.DetectCommunities took %v", time.Since(start))
+	} else {
+		time.Sleep(5 * time.Minute)
+	}
+
+	log.Println("Analytics worker: starting hourly analysis loop")
+	for {
+		start := time.Now()
+		clusterDetector.Detect(ctx)
+		log.Printf("clusterDetector.Detect took %v", time.Since(start))
+		start = time.Now()
+		trustAnalyzer.AnalyzeTrust(ctx)
+		log.Printf("trustAnalyzer.AnalyzeTrust took %v", time.Since(start))
+		start = time.Now()
+		communityDetector.DetectCommunities(ctx)
+		log.Printf("communityDetector.DetectCommunities took %v", time.Since(start))
+
+		select {
+		case <-ctx.Done():
+			log.Println("Analytics worker stopped")
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -496,7 +611,7 @@ func runSyncCommand(args []string) {
 	}
 
 	// Open storage
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path)
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
@@ -587,8 +702,8 @@ func runHydratorTestWithCopy(cfg *config.Config) error {
 	// Remove old test database if it exists
 	os.Remove(testDBPath)
 
-	// Create a fresh test database
-	testStore, err := storage.New(cfg.Storage.Backend, testDBPath)
+	// Create a fresh test database (archive disabled for test)
+	testStore, err := storage.New(cfg.Storage.Backend, testDBPath, false, "")
 	if err != nil {
 		return fmt.Errorf("failed to create test database: %w", err)
 	}
@@ -662,8 +777,8 @@ func runHydratorBenchmark(cfg *config.Config) error {
 	log.Println("=== Hydrator Performance Benchmark ===")
 	log.Println()
 
-	// Open production database (read-only operations)
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path)
+	// Open production database (read-only operations, archive disabled for benchmark)
+	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, false, cfg.Storage.AnalyticsDBURL)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
@@ -672,9 +787,9 @@ func runHydratorBenchmark(cfg *config.Config) error {
 	ctx := context.Background()
 
 	// Get database stats
-	kind0Count, _ := store.CountEvents(ctx, 0)
-	kind3Count, _ := store.CountEvents(ctx, 3)
-	kind10002Count, _ := store.CountEvents(ctx, 10002)
+	kind0Count, _ := store.CountEventsByKind(ctx, 0)
+	kind3Count, _ := store.CountEventsByKind(ctx, 3)
+	kind10002Count, _ := store.CountEventsByKind(ctx, 10002)
 
 	log.Printf("Database size:")
 	log.Printf("  Kind 0 (profiles): %d", kind0Count)
@@ -750,9 +865,9 @@ func runHydratorTest(store *storage.Storage, cfg *config.Config, skipFetch bool)
 		return fmt.Errorf("failed to count attempts: %w", err)
 	}
 
-	totalKind0, _ := store.CountEvents(ctx, 0)
-	totalKind3, _ := store.CountEvents(ctx, 3)
-	totalKind10002, _ := store.CountEvents(ctx, 10002)
+	totalKind0, _ := store.CountEventsByKind(ctx, 0)
+	totalKind3, _ := store.CountEventsByKind(ctx, 3)
+	totalKind10002, _ := store.CountEventsByKind(ctx, 10002)
 
 	log.Printf("Before hydration:")
 	log.Printf("  Previous fetch attempts: %d", beforeAttempts)
@@ -820,9 +935,9 @@ func runHydratorTest(store *storage.Storage, cfg *config.Config, skipFetch bool)
 		return fmt.Errorf("failed to count attempts: %w", err)
 	}
 
-	newKind0, _ := store.CountEvents(ctx, 0)
-	newKind3, _ := store.CountEvents(ctx, 3)
-	newKind10002, _ := store.CountEvents(ctx, 10002)
+	newKind0, _ := store.CountEventsByKind(ctx, 0)
+	newKind3, _ := store.CountEventsByKind(ctx, 3)
+	newKind10002, _ := store.CountEventsByKind(ctx, 10002)
 
 	if !skipFetch && len(pubkeysToFetch) > 0 {
 		log.Printf("After hydration:")

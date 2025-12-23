@@ -44,6 +44,28 @@ func (s *Storage) InitAnalyticsSchema() error {
 		return nil
 	}
 
+	// Use SERIAL for PostgreSQL, AUTOINCREMENT for SQLite
+	botClustersTable := `
+	CREATE TABLE IF NOT EXISTS bot_clusters (
+		cluster_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		detected_at INTEGER NOT NULL,
+		cluster_size INTEGER NOT NULL,
+		internal_density REAL NOT NULL,
+		external_ratio REAL NOT NULL,
+		is_active INTEGER NOT NULL DEFAULT 1
+	);`
+	if s.isPostgres() {
+		botClustersTable = `
+	CREATE TABLE IF NOT EXISTS bot_clusters (
+		cluster_id SERIAL PRIMARY KEY,
+		detected_at INTEGER NOT NULL,
+		cluster_size INTEGER NOT NULL,
+		internal_density REAL NOT NULL,
+		external_ratio REAL NOT NULL,
+		is_active INTEGER NOT NULL DEFAULT 1
+	);`
+	}
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS req_analytics (
 		pubkey TEXT PRIMARY KEY,
@@ -68,14 +90,7 @@ func (s *Storage) InitAnalyticsSchema() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_cooccur_count ON req_cooccurrence(count DESC);
 
-	CREATE TABLE IF NOT EXISTS bot_clusters (
-		cluster_id INTEGER PRIMARY KEY AUTOINCREMENT,
-		detected_at INTEGER NOT NULL,
-		cluster_size INTEGER NOT NULL,
-		internal_density REAL NOT NULL,
-		external_ratio REAL NOT NULL,
-		is_active INTEGER NOT NULL DEFAULT 1
-	);
+	` + botClustersTable + `
 
 	CREATE TABLE IF NOT EXISTS bot_cluster_members (
 		cluster_id INTEGER NOT NULL,
@@ -194,13 +209,13 @@ func (s *Storage) FlushREQAnalytics(
 	defer tx.Rollback()
 
 	for pubkey, count := range pubkeyRequests {
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO req_analytics (pubkey, total_requests, last_request)
 			VALUES (?, ?, ?)
 			ON CONFLICT(pubkey) DO UPDATE SET
-				total_requests = total_requests + excluded.total_requests,
+				total_requests = req_analytics.total_requests + excluded.total_requests,
 				last_request = excluded.last_request
-		`, pubkey, count, now)
+		`), pubkey, count, now)
 		if err != nil {
 			return err
 		}
@@ -208,12 +223,12 @@ func (s *Storage) FlushREQAnalytics(
 
 	for pubkey, kindCounts := range pubkeyByKind {
 		for kind, count := range kindCounts {
-			_, err := tx.ExecContext(ctx, `
+			_, err := tx.ExecContext(ctx, s.rebind(`
 				INSERT INTO req_analytics_by_kind (pubkey, kind, request_count)
 				VALUES (?, ?, ?)
 				ON CONFLICT(pubkey, kind) DO UPDATE SET
-					request_count = request_count + excluded.request_count
-			`, pubkey, kind, count)
+					request_count = req_analytics_by_kind.request_count + excluded.request_count
+			`), pubkey, kind, count)
 			if err != nil {
 				return err
 			}
@@ -221,13 +236,13 @@ func (s *Storage) FlushREQAnalytics(
 	}
 
 	for pairKey, count := range cooccurrence {
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO req_cooccurrence (pair_key, count, last_seen)
 			VALUES (?, ?, ?)
 			ON CONFLICT(pair_key) DO UPDATE SET
-				count = count + excluded.count,
+				count = req_cooccurrence.count + excluded.count,
 				last_seen = excluded.last_seen
-		`, pairKey, count, now)
+		`), pairKey, count, now)
 		if err != nil {
 			return err
 		}
@@ -245,11 +260,11 @@ func (s *Storage) GetPubkeyAnalytics(ctx context.Context, pubkey string) (*Pubke
 	var stats PubkeyStats
 	var lastRequest int64
 
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT pubkey, total_requests, last_request
 		FROM req_analytics
 		WHERE pubkey = ?
-	`, pubkey).Scan(&stats.Pubkey, &stats.TotalRequests, &lastRequest)
+	`), pubkey).Scan(&stats.Pubkey, &stats.TotalRequests, &lastRequest)
 	if err != nil {
 		return nil, nil
 	}
@@ -257,11 +272,11 @@ func (s *Storage) GetPubkeyAnalytics(ctx context.Context, pubkey string) (*Pubke
 	stats.LastRequest = time.Unix(lastRequest, 0)
 	stats.ByKind = make(map[int]int64)
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT kind, request_count
 		FROM req_analytics_by_kind
 		WHERE pubkey = ?
-	`, pubkey)
+	`), pubkey)
 	if err != nil {
 		return &stats, nil
 	}
@@ -283,12 +298,12 @@ func (s *Storage) GetTopRequestedPubkeys(ctx context.Context, limit int) ([]Pubk
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT pubkey, total_requests, last_request
 		FROM req_analytics
 		ORDER BY total_requests DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -312,12 +327,12 @@ func (s *Storage) GetTopCooccurrences(ctx context.Context, limit int) ([]Cooccur
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT pair_key, count
 		FROM req_cooccurrence
 		ORDER BY count DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -356,10 +371,10 @@ func (s *Storage) SaveBotCluster(ctx context.Context, members []string, internal
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, s.rebind(`
 		INSERT INTO bot_clusters (detected_at, cluster_size, internal_density, external_ratio, is_active)
 		VALUES (?, ?, ?, ?, 1)
-	`, now, len(members), internalDensity, externalRatio)
+	`), now, len(members), internalDensity, externalRatio)
 	if err != nil {
 		return 0, err
 	}
@@ -367,10 +382,10 @@ func (s *Storage) SaveBotCluster(ctx context.Context, members []string, internal
 	clusterID, _ := result.LastInsertId()
 
 	for _, pubkey := range members {
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO bot_cluster_members (cluster_id, pubkey)
 			VALUES (?, ?)
-		`, clusterID, pubkey)
+		`), clusterID, pubkey)
 		if err != nil {
 			return 0, err
 		}
@@ -389,13 +404,13 @@ func (s *Storage) GetBotClusters(ctx context.Context, limit int) ([]BotCluster, 
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT cluster_id, detected_at, cluster_size, internal_density, external_ratio, is_active
 		FROM bot_clusters
 		WHERE is_active = 1
 		ORDER BY detected_at DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -413,9 +428,9 @@ func (s *Storage) GetBotClusters(ctx context.Context, limit int) ([]BotCluster, 
 	}
 
 	for i := range clusters {
-		memberRows, err := dbConn.QueryContext(ctx, `
+		memberRows, err := dbConn.QueryContext(ctx, s.rebind(`
 			SELECT pubkey FROM bot_cluster_members WHERE cluster_id = ?
-		`, clusters[i].ID)
+		`), clusters[i].ID)
 		if err != nil {
 			continue
 		}
@@ -447,11 +462,11 @@ func (s *Storage) IsPubkeyInBotCluster(ctx context.Context, pubkey string) (bool
 	}
 
 	var count int
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT COUNT(*) FROM bot_cluster_members bcm
 		JOIN bot_clusters bc ON bcm.cluster_id = bc.cluster_id
 		WHERE bcm.pubkey = ? AND bc.is_active = 1
-	`, pubkey).Scan(&count)
+	`), pubkey).Scan(&count)
 
 	return count > 0, err
 }
@@ -463,14 +478,14 @@ func (s *Storage) SaveSpamCandidate(ctx context.Context, pubkey, reason string, 
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO spam_candidates (pubkey, detected_at, reason, event_count, purged)
 		VALUES (?, ?, ?, ?, 0)
 		ON CONFLICT(pubkey) DO UPDATE SET
 			detected_at = excluded.detected_at,
 			reason = excluded.reason,
 			event_count = excluded.event_count
-	`, pubkey, now, reason, eventCount)
+	`), pubkey, now, reason, eventCount)
 
 	return err
 }
@@ -481,13 +496,13 @@ func (s *Storage) GetSpamCandidates(ctx context.Context, limit int) ([]SpamCandi
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT pubkey, detected_at, reason, event_count, purged
 		FROM spam_candidates
 		WHERE purged = 0
 		ORDER BY event_count DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -514,9 +529,9 @@ func (s *Storage) MarkSpamPurged(ctx context.Context, pubkeys []string) error {
 	}
 
 	for _, pubkey := range pubkeys {
-		_, err := dbConn.ExecContext(ctx, `
+		_, err := dbConn.ExecContext(ctx, s.rebind(`
 			UPDATE spam_candidates SET purged = 1 WHERE pubkey = ?
-		`, pubkey)
+		`), pubkey)
 		if err != nil {
 			return err
 		}
@@ -567,9 +582,9 @@ func (s *Storage) CountEventsForPubkey(ctx context.Context, pubkey string) (int6
 	}
 
 	var count int64
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT COUNT(*) FROM event WHERE pubkey = ?
-	`, pubkey).Scan(&count)
+	`), pubkey).Scan(&count)
 
 	return count, err
 }
@@ -582,7 +597,7 @@ func (s *Storage) DeleteEventsForPubkeys(ctx context.Context, pubkeys []string) 
 
 	var totalDeleted int64
 	for _, pubkey := range pubkeys {
-		result, err := dbConn.ExecContext(ctx, `DELETE FROM event WHERE pubkey = ?`, pubkey)
+		result, err := dbConn.ExecContext(ctx, s.rebind(`DELETE FROM event WHERE pubkey = ?`), pubkey)
 		if err != nil {
 			return totalDeleted, err
 		}
@@ -601,13 +616,13 @@ func (s *Storage) RecordRejectedEvent(ctx context.Context, kind int, pubkey stri
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO rejected_events_by_kind (kind, pubkey, count, last_seen)
 		VALUES (?, ?, 1, ?)
 		ON CONFLICT(kind, pubkey) DO UPDATE SET
-			count = count + 1,
+			count = rejected_events_by_kind.count + 1,
 			last_seen = excluded.last_seen
-	`, kind, pubkey, now)
+	`), kind, pubkey, now)
 
 	return err
 }
@@ -626,12 +641,12 @@ func (s *Storage) GetRejectedEventStats(ctx context.Context, limit int) ([]Rejec
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT kind, pubkey, count, last_seen
 		FROM rejected_events_by_kind
 		ORDER BY count DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -665,13 +680,13 @@ func (s *Storage) GetRejectedEventsByKind(ctx context.Context, limit int) ([]Rej
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT kind, SUM(count) as total_count, COUNT(DISTINCT pubkey) as unique_pubkeys, MAX(last_seen) as last_seen
 		FROM rejected_events_by_kind
 		GROUP BY kind
 		ORDER BY total_count DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -699,13 +714,13 @@ func (s *Storage) RecordRejectedREQ(ctx context.Context, kind int) error {
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO rejected_req_kinds (kind, count, last_seen)
 		VALUES (?, 1, ?)
 		ON CONFLICT(kind) DO UPDATE SET
-			count = count + 1,
+			count = rejected_req_kinds.count + 1,
 			last_seen = excluded.last_seen
-	`, kind, now)
+	`), kind, now)
 
 	return err
 }
@@ -723,12 +738,12 @@ func (s *Storage) GetRejectedREQStats(ctx context.Context, limit int) ([]Rejecte
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT kind, count, last_seen
 		FROM rejected_req_kinds
 		ORDER BY count DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -759,24 +774,24 @@ func (s *Storage) RecordREQKind(ctx context.Context, kind int) error {
 	date := time.Now().Format("2006-01-02")
 
 	// Update total stats
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO req_kind_stats (kind, total_requests, last_request)
 		VALUES (?, 1, ?)
 		ON CONFLICT(kind) DO UPDATE SET
 			total_requests = total_requests + 1,
 			last_request = excluded.last_request
-	`, kind, now)
+	`), kind, now)
 	if err != nil {
 		return err
 	}
 
 	// Update daily stats
-	_, err = dbConn.ExecContext(ctx, `
+	_, err = dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO req_kind_stats_daily (date, kind, request_count)
 		VALUES (?, ?, 1)
 		ON CONFLICT(date, kind) DO UPDATE SET
 			request_count = request_count + 1
-	`, date, kind)
+	`), date, kind)
 
 	return err
 }
@@ -794,12 +809,12 @@ func (s *Storage) GetREQKindStats(ctx context.Context, limit int) ([]REQKindStat
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT kind, total_requests, last_request
 		FROM req_kind_stats
 		ORDER BY total_requests DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -851,12 +866,12 @@ func (s *Storage) GetREQKindDailyStats(ctx context.Context, days int, kinds []in
 		`
 		rows, err = dbConn.QueryContext(ctx, query, startDate)
 	} else {
-		rows, err = dbConn.QueryContext(ctx, `
+		rows, err = dbConn.QueryContext(ctx, s.rebind(`
 			SELECT date, kind, request_count
 			FROM req_kind_stats_daily
 			WHERE date >= ?
 			ORDER BY date DESC, request_count DESC
-		`, startDate)
+		`), startDate)
 	}
 
 	if err != nil {
@@ -927,9 +942,9 @@ func (s *Storage) SetTrustedPubkeys(ctx context.Context, pubkeys []string) error
 	// Insert new trusted pubkeys
 	now := time.Now().Unix()
 	for _, pubkey := range pubkeys {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO trusted_pubkeys (pubkey, trusted_at) VALUES (?, ?)
-		`, pubkey, now); err != nil {
+		`), pubkey, now); err != nil {
 			return err
 		}
 	}
@@ -945,9 +960,9 @@ func (s *Storage) IsPubkeyTrusted(ctx context.Context, pubkey string) bool {
 	}
 
 	var count int
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT COUNT(*) FROM trusted_pubkeys WHERE pubkey = ?
-	`, pubkey).Scan(&count)
+	`), pubkey).Scan(&count)
 
 	return err == nil && count > 0
 }
@@ -985,7 +1000,26 @@ func (s *Storage) GetFollowersOfPubkey(ctx context.Context, pubkey string) ([]st
 	}
 
 	// Find the latest kind:3 event per author that has a "p" tag for this pubkey
-	query := `
+	var query string
+	if s.isPostgres() {
+		query = `
+		WITH latest_contact_lists AS (
+			SELECT e1.pubkey as follower, e1.tags
+			FROM event e1
+			INNER JOIN (
+				SELECT pubkey, MAX(created_at) as max_created_at
+				FROM event
+				WHERE kind = 3
+				GROUP BY pubkey
+			) e2 ON e1.pubkey = e2.pubkey AND e1.created_at = e2.max_created_at
+			WHERE e1.kind = 3
+		)
+		SELECT DISTINCT follower
+		FROM latest_contact_lists, jsonb_array_elements(latest_contact_lists.tags) as tag
+		WHERE tag->>0 = 'p'
+		  AND tag->>1 = $1`
+	} else {
+		query = `
 		WITH latest_contact_lists AS (
 			SELECT e1.pubkey as follower, e1.tags
 			FROM event e1
@@ -1000,8 +1034,8 @@ func (s *Storage) GetFollowersOfPubkey(ctx context.Context, pubkey string) ([]st
 		SELECT DISTINCT follower
 		FROM latest_contact_lists, json_each(latest_contact_lists.tags) as tag
 		WHERE json_extract(tag.value, '$[0]') = 'p'
-		  AND json_extract(tag.value, '$[1]') = ?
-	`
+		  AND json_extract(tag.value, '$[1]') = ?`
+	}
 
 	rows, err := dbConn.QueryContext(ctx, query, pubkey)
 	if err != nil {
@@ -1035,6 +1069,7 @@ type StoredCommunity struct {
 type StoredCommunityMember struct {
 	Pubkey        string `json:"pubkey"`
 	Name          string `json:"name"`
+	Picture       string `json:"picture"`
 	FollowerCount int    `json:"follower_count"`
 }
 
@@ -1090,16 +1125,17 @@ func (s *Storage) SaveCommunities(ctx context.Context, graph interface{}) error 
 		return nil
 	}
 
-	// Type assert to get the data
+	// Type assert to get the data - json tags must match StoredCommunityMember tags
 	type communityGraph struct {
 		Communities []struct {
 			ID            int
 			Members       []string
 			Size          int
 			TopMembers    []struct {
-				Pubkey        string
-				Name          string
-				FollowerCount int
+				Pubkey        string `json:"pubkey"`
+				Name          string `json:"name"`
+				Picture       string `json:"picture"`
+				FollowerCount int    `json:"follower_count"`
 			}
 			InternalEdges int
 			ExternalEdges int
@@ -1142,19 +1178,19 @@ func (s *Storage) SaveCommunities(ctx context.Context, graph interface{}) error 
 	for _, com := range cg.Communities {
 		topMembersJSON, _ := json.Marshal(com.TopMembers)
 
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO communities (id, size, internal_edges, external_edges, modularity, top_members, detected_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, com.ID, com.Size, com.InternalEdges, com.ExternalEdges, com.Modularity, string(topMembersJSON), now)
+		`), com.ID, com.Size, com.InternalEdges, com.ExternalEdges, com.Modularity, string(topMembersJSON), now)
 		if err != nil {
 			return err
 		}
 
 		// Insert members
 		for _, member := range com.Members {
-			_, err := tx.ExecContext(ctx, `
+			_, err := tx.ExecContext(ctx, s.rebind(`
 				INSERT INTO community_members (community_id, pubkey) VALUES (?, ?)
-			`, com.ID, member)
+			`), com.ID, member)
 			if err != nil {
 				return err
 			}
@@ -1163,19 +1199,24 @@ func (s *Storage) SaveCommunities(ctx context.Context, graph interface{}) error 
 
 	// Insert edges
 	for _, edge := range cg.Edges {
-		_, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, s.rebind(`
 			INSERT INTO community_edges (from_id, to_id, weight) VALUES (?, ?, ?)
-		`, edge.FromID, edge.ToID, edge.Weight)
+		`), edge.FromID, edge.ToID, edge.Weight)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Update stats
-	_, err = tx.ExecContext(ctx, `
-		INSERT OR REPLACE INTO community_stats (id, total_nodes, total_edges, num_communities, detected_at)
+	_, err = tx.ExecContext(ctx, s.rebind(`
+		INSERT INTO community_stats (id, total_nodes, total_edges, num_communities, detected_at)
 		VALUES (1, ?, ?, ?, ?)
-	`, cg.TotalNodes, cg.TotalEdges, len(cg.Communities), now)
+		ON CONFLICT(id) DO UPDATE SET
+			total_nodes = excluded.total_nodes,
+			total_edges = excluded.total_edges,
+			num_communities = excluded.num_communities,
+			detected_at = excluded.detected_at
+	`), cg.TotalNodes, cg.TotalEdges, len(cg.Communities), now)
 	if err != nil {
 		return err
 	}
@@ -1252,9 +1293,9 @@ func (s *Storage) GetCommunityMembers(ctx context.Context, communityID int, limi
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT pubkey FROM community_members WHERE community_id = ? LIMIT ?
-	`, communityID, limit)
+	`), communityID, limit)
 	if err != nil {
 		return nil, err
 	}

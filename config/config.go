@@ -25,8 +25,10 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	Backend string `json:"backend"`
-	Path    string `json:"path"`
+	Backend        string `json:"backend"`
+	Path           string `json:"path"`
+	ArchiveEnabled *bool  `json:"archive_enabled"`
+	AnalyticsDBURL string `json:"analytics_db_url"` // Optional: separate PostgreSQL for analytics
 }
 
 type SyncConfig struct {
@@ -195,6 +197,12 @@ func Load(path string) (*Config, error) {
 	// Set defaults for sync kinds
 	if len(cfg.SyncKinds) == 0 {
 		cfg.SyncKinds = DefaultSyncKinds()
+	}
+
+	// Set default for storage archiving (enabled by default)
+	if cfg.Storage.ArchiveEnabled == nil {
+		defaultTrue := true
+		cfg.Storage.ArchiveEnabled = &defaultTrue
 	}
 
 	// Set defaults for profile hydration

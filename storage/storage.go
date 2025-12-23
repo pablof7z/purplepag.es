@@ -4,18 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
+	"time"
 
 	"github.com/fiatjaf/eventstore"
 	"github.com/fiatjaf/eventstore/lmdb"
+	"github.com/fiatjaf/eventstore/postgresql"
 	"github.com/fiatjaf/eventstore/sqlite3"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 type Storage struct {
-	db eventstore.Store
+	db                  eventstore.Store
+	archiveEnabled      bool
+	analyticsDB         *sqlx.DB // Separate database connection for analytics (PostgreSQL or SQLite)
+	analyticsIsPostgres bool     // True if analyticsDB is PostgreSQL
 }
 
-func New(backend, path string) (*Storage, error) {
+func New(backend, path string, archiveEnabled bool, analyticsDBURL string) (*Storage, error) {
 	var db eventstore.Store
 
 	switch backend {
@@ -29,21 +38,54 @@ func New(backend, path string) (*Storage, error) {
 			DatabaseURL: path,
 			QueryLimit:  1000000,
 		}
+	case "postgresql":
+		db = &postgresql.PostgresBackend{
+			DatabaseURL: path,
+			QueryLimit:  1000000,
+		}
 	default:
-		return nil, fmt.Errorf("unsupported storage backend: %s (supported: lmdb, sqlite3)", backend)
+		return nil, fmt.Errorf("unsupported storage backend: %s (supported: lmdb, sqlite3, postgresql)", backend)
 	}
 
 	if err := db.Init(); err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
-	storage := &Storage{db: db}
+	storage := &Storage{db: db, archiveEnabled: archiveEnabled}
+
+	// Connect to separate analytics database if provided
+	if analyticsDBURL != "" {
+		var analyticsDB *sqlx.DB
+		var err error
+
+		// Detect database type: PostgreSQL URLs start with postgres://, everything else is SQLite
+		if strings.HasPrefix(analyticsDBURL, "postgres://") {
+			analyticsDB, err = sqlx.Connect("postgres", analyticsDBURL)
+			storage.analyticsIsPostgres = true
+			log.Printf("Connected to separate analytics database (PostgreSQL): %s", analyticsDBURL)
+		} else {
+			// Treat as SQLite file path
+			analyticsDB, err = sqlx.Connect("sqlite3", analyticsDBURL)
+			storage.analyticsIsPostgres = false
+			log.Printf("Connected to separate analytics database (SQLite): %s", analyticsDBURL)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to analytics database: %w", err)
+		}
+		storage.analyticsDB = analyticsDB
+	}
 
 	// Apply SQLite optimizations if using SQLite
 	if backend == "sqlite3" {
 		if err := storage.ApplySQLiteOptimizations(); err != nil {
 			return nil, fmt.Errorf("failed to apply SQLite optimizations: %w", err)
 		}
+	}
+
+
+	if archiveEnabled {
+		log.Println("Event archiving enabled for replaceable events")
 	}
 
 	return storage, nil
@@ -94,11 +136,20 @@ func (s *Storage) ApplySQLiteOptimizations() error {
 }
 
 func (s *Storage) SaveEvent(ctx context.Context, evt *nostr.Event) error {
-	// Archive old version for replaceable events before saving
-	if isReplaceableKind(evt.Kind) {
+	if s.archiveEnabled && isReplaceableKind(evt.Kind) {
 		s.archiveOldVersion(ctx, evt)
 	}
-	return s.db.SaveEvent(ctx, evt)
+	start := time.Now()
+	err := s.db.SaveEvent(ctx, evt)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		log.Printf("SLOW db.SaveEvent: kind=%d tags=%d elapsed=%v", evt.Kind, len(evt.Tags), elapsed)
+	}
+	if err != nil {
+		return err
+	}
+
+
+	return nil
 }
 
 // isReplaceableKind returns true for replaceable event kinds (NIP-01)
@@ -110,16 +161,25 @@ func isReplaceableKind(kind int) bool {
 // archiveOldVersion archives the current version before replacement (only for trusted pubkeys)
 func (s *Storage) archiveOldVersion(ctx context.Context, newEvt *nostr.Event) {
 	// Only archive history for trusted pubkeys
-	if !s.IsPubkeyTrusted(ctx, newEvt.PubKey) {
+	start := time.Now()
+	trusted := s.IsPubkeyTrusted(ctx, newEvt.PubKey)
+	if elapsed := time.Since(start); elapsed > 20*time.Millisecond {
+		log.Printf("SLOW IsPubkeyTrusted: elapsed=%v pubkey=%s", elapsed, newEvt.PubKey[:8])
+	}
+	if !trusted {
 		return
 	}
 
 	// Query for existing event
+	start = time.Now()
 	existing, err := s.QueryEvents(ctx, nostr.Filter{
 		Kinds:   []int{newEvt.Kind},
 		Authors: []string{newEvt.PubKey},
 		Limit:   1,
 	})
+	if elapsed := time.Since(start); elapsed > 20*time.Millisecond {
+		log.Printf("SLOW archiveOldVersion.QueryEvents: kind=%d elapsed=%v", newEvt.Kind, elapsed)
+	}
 	if err != nil || len(existing) == 0 {
 		return
 	}
@@ -127,11 +187,20 @@ func (s *Storage) archiveOldVersion(ctx context.Context, newEvt *nostr.Event) {
 	oldEvt := existing[0]
 	// Only archive if old event is different and older
 	if oldEvt.ID != newEvt.ID && oldEvt.CreatedAt < newEvt.CreatedAt {
+		start = time.Now()
 		s.ArchiveEvent(ctx, oldEvt)
+		if elapsed := time.Since(start); elapsed > 20*time.Millisecond {
+			log.Printf("SLOW ArchiveEvent: kind=%d tags=%d elapsed=%v", oldEvt.Kind, len(oldEvt.Tags), elapsed)
+		}
 	}
 }
 
 func (s *Storage) QueryEvents(ctx context.Context, filter nostr.Filter) ([]*nostr.Event, error) {
+	// Add 5 second timeout to prevent query pile-up
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Use eventstore's native query capabilities
 	ch, err := s.db.QueryEvents(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -149,44 +218,47 @@ func (s *Storage) DeleteEvent(ctx context.Context, evt *nostr.Event) error {
 	return s.db.DeleteEvent(ctx, evt)
 }
 
-func (s *Storage) CountEvents(ctx context.Context, kind int) (int64, error) {
-	if counter, ok := s.db.(interface {
-		CountEvents(context.Context, nostr.Filter) (int64, error)
-	}); ok {
-		return counter.CountEvents(ctx, nostr.Filter{Kinds: []int{kind}})
-	}
-
-	events, err := s.QueryEvents(ctx, nostr.Filter{Kinds: []int{kind}})
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(events)), nil
+func (s *Storage) CountEventsByKind(ctx context.Context, kind int) (int64, error) {
+	// Use the optimized CountEvents method with a simple kind filter
+	return s.CountEvents(ctx, nostr.Filter{Kinds: []int{kind}})
 }
 
 // GetEventCountsByKind returns counts for all kinds stored in the database
 func (s *Storage) GetEventCountsByKind(ctx context.Context) (map[int]int64, error) {
+	// For SQL backends (SQLite/PostgreSQL), query the event table directly
 	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
+	if dbConn != nil {
+		rows, err := dbConn.QueryContext(ctx, `SELECT kind, COUNT(*) FROM event GROUP BY kind`)
+		if err == nil {
+			defer rows.Close()
+			result := make(map[int]int64)
+			for rows.Next() {
+				var kind int
+				var count int64
+				if err := rows.Scan(&kind, &count); err != nil {
+					return nil, err
+				}
+				result[kind] = count
+			}
+			return result, rows.Err()
+		}
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `SELECT kind, COUNT(*) FROM event GROUP BY kind`)
+	// For LMDB: iterate through events and count by kind
+	// This is slower but works without SQL tables
+	result := make(map[int]int64)
+
+	// Query all events (no filter) and count by kind
+	ch, err := s.db.QueryEvents(ctx, nostr.Filter{})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	result := make(map[int]int64)
-	for rows.Next() {
-		var kind int
-		var count int64
-		if err := rows.Scan(&kind, &count); err != nil {
-			return nil, err
-		}
-		result[kind] = count
+	for evt := range ch {
+		result[evt.Kind]++
 	}
 
-	return result, rows.Err()
+	return result, nil
 }
 
 func (s *Storage) Close() {
@@ -207,17 +279,33 @@ func (s *Storage) SearchProfiles(ctx context.Context, query string, limit int) (
 
 	// Search in content field (which contains JSON with name, display_name, about, nip05)
 	// Also search by pubkey prefix
-	rows, err := dbConn.QueryContext(ctx, `
-		SELECT id, pubkey, created_at, kind, tags, content, sig
-		FROM event
-		WHERE kind = 0
-		AND (
-			content LIKE '%' || ? || '%' COLLATE NOCASE
-			OR pubkey LIKE ? || '%'
-		)
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, query, query, limit*2) // Fetch extra to account for duplicates
+	// Use ILIKE for PostgreSQL, LIKE with COLLATE NOCASE for SQLite
+	var sql string
+	if s.isPostgres() {
+		sql = `
+			SELECT id, pubkey, created_at, kind, tags, content, sig
+			FROM event
+			WHERE kind = 0
+			AND (
+				content ILIKE '%' || $1 || '%'
+				OR pubkey LIKE $2 || '%'
+			)
+			ORDER BY created_at DESC
+			LIMIT $3`
+	} else {
+		sql = `
+			SELECT id, pubkey, created_at, kind, tags, content, sig
+			FROM event
+			WHERE kind = 0
+			AND (
+				content LIKE '%' || ? || '%' COLLATE NOCASE
+				OR pubkey LIKE ? || '%'
+			)
+			ORDER BY created_at DESC
+			LIMIT ?`
+	}
+
+	rows, err := dbConn.QueryContext(ctx, sql, query, query, limit*2) // Fetch extra to account for duplicates
 	if err != nil {
 		return nil, err
 	}
@@ -283,4 +371,46 @@ func (s *Storage) GetProfileNames(ctx context.Context, pubkeys []string) (map[st
 	}
 
 	return names, nil
+}
+
+type ProfileInfo struct {
+	Name    string
+	Picture string
+}
+
+// GetProfileInfo returns a map of pubkey -> ProfileInfo (name + picture) from kind:0 events
+func (s *Storage) GetProfileInfo(ctx context.Context, pubkeys []string) (map[string]ProfileInfo, error) {
+	if len(pubkeys) == 0 {
+		return make(map[string]ProfileInfo), nil
+	}
+
+	events, err := s.QueryEvents(ctx, nostr.Filter{
+		Kinds:   []int{0},
+		Authors: pubkeys,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	profiles := make(map[string]ProfileInfo)
+	for _, evt := range events {
+		var profile struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"display_name"`
+			Picture     string `json:"picture"`
+		}
+		if err := json.Unmarshal([]byte(evt.Content), &profile); err != nil {
+			continue
+		}
+		name := profile.DisplayName
+		if name == "" {
+			name = profile.Name
+		}
+		profiles[evt.PubKey] = ProfileInfo{
+			Name:    name,
+			Picture: profile.Picture,
+		}
+	}
+
+	return profiles, nil
 }
