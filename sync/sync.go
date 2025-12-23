@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -24,13 +25,21 @@ func NewSyncer(storage *storage.Storage, allowedKinds []int, relays []string) *S
 }
 
 func (s *Syncer) SyncAll(ctx context.Context) error {
+	var wg sync.WaitGroup
+
 	for _, relayURL := range s.relays {
-		if err := s.syncRelay(ctx, relayURL); err != nil {
-			log.Printf("Failed to sync from %s: %v", relayURL, err)
-			continue
-		}
-		log.Printf("Successfully synced from %s", relayURL)
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+			if err := s.syncRelay(ctx, url); err != nil {
+				log.Printf("Failed to sync from %s: %v", url, err)
+				return
+			}
+			log.Printf("Successfully synced from %s", url)
+		}(relayURL)
 	}
+
+	wg.Wait()
 	return nil
 }
 
@@ -80,7 +89,7 @@ func (s *Syncer) syncKind(ctx context.Context, relay *nostr.Relay, kind int) err
 		if oldestTime != nil {
 			t := nostr.Timestamp(*oldestTime - 1)
 			until = &t
-			log.Printf("Continuing sync for kind %d (fetched %d so far, until %d)...", kind, totalEvents, *until)
+			log.Printf("Continuing sync for kind %d from %s (fetched %d so far, until %d)...", kind, relay.URL, totalEvents, *until)
 		} else {
 			// No events received, we're done
 			log.Printf("Sync complete for kind %d: received %d events, saved %d new events", kind, totalEvents, totalNew)

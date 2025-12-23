@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fiatjaf/eventstore/postgresql"
 	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/jmoiron/sqlx"
 	"github.com/nbd-wtf/go-nostr"
@@ -22,12 +23,40 @@ type DiscoveredRelay struct {
 }
 
 func (s *Storage) getDBConn() *sqlx.DB {
+	// Return separate analytics DB if available
+	if s.analyticsDB != nil {
+		return s.analyticsDB
+	}
+
+	// Fallback: try to extract from eventstore (for backwards compatibility)
 	switch db := s.db.(type) {
 	case *sqlite3.SQLite3Backend:
+		return db.DB
+	case *postgresql.PostgresBackend:
 		return db.DB
 	default:
 		return nil
 	}
+}
+
+func (s *Storage) isPostgres() bool {
+	// Check if we have a separate analytics DB and it's PostgreSQL
+	if s.analyticsDB != nil {
+		return s.analyticsIsPostgres
+	}
+
+	// Fallback: check eventstore backend type
+	_, ok := s.db.(*postgresql.PostgresBackend)
+	return ok
+}
+
+// rebind converts ? placeholders to $1, $2, etc. for PostgreSQL
+func (s *Storage) rebind(query string) string {
+	dbConn := s.getDBConn()
+	if dbConn == nil || !s.isPostgres() {
+		return query
+	}
+	return dbConn.Rebind(query)
 }
 
 func (s *Storage) InitRelayDiscoverySchema() error {
@@ -62,11 +91,11 @@ func (s *Storage) AddDiscoveredRelay(ctx context.Context, url string) error {
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO discovered_relays (url, first_seen, is_active)
 		VALUES (?, ?, 1)
 		ON CONFLICT(url) DO NOTHING
-	`, url, now)
+	`), url, now)
 
 	return err
 }
@@ -118,22 +147,22 @@ func (s *Storage) UpdateSyncStats(ctx context.Context, url string, success bool,
 	now := time.Now().Unix()
 
 	if success {
-		_, err := dbConn.ExecContext(ctx, `
+		_, err := dbConn.ExecContext(ctx, s.rebind(`
 			UPDATE discovered_relays
 			SET last_sync = ?,
 			    sync_attempts = sync_attempts + 1,
 			    sync_successes = sync_successes + 1,
 			    events_contributed = events_contributed + ?
 			WHERE url = ?
-		`, now, eventsContributed, url)
+		`), now, eventsContributed, url)
 		return err
 	}
 
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		UPDATE discovered_relays
 		SET sync_attempts = sync_attempts + 1
 		WHERE url = ?
-	`, url)
+	`), url)
 	return err
 }
 
@@ -144,7 +173,27 @@ func (s *Storage) GetRelayStats(ctx context.Context) ([]DiscoveredRelay, error) 
 	}
 
 	// Count pubkeys per relay from kind 10002 events
-	rows, err := dbConn.QueryContext(ctx, `
+	var query string
+	if s.isPostgres() {
+		query = `
+		WITH relay_pubkey_counts AS (
+			SELECT
+				tag->>1 as relay_url,
+				COUNT(DISTINCT event.pubkey) as pubkey_count
+			FROM event, jsonb_array_elements(event.tags) as tag
+			WHERE event.kind = 10002
+			  AND tag->>0 = 'r'
+			  AND tag->>1 IS NOT NULL
+			GROUP BY relay_url
+		)
+		SELECT
+			dr.url, dr.first_seen, dr.last_sync, dr.sync_attempts, dr.sync_successes,
+			dr.events_contributed, dr.is_active, COALESCE(rpc.pubkey_count, 0)
+		FROM discovered_relays dr
+		LEFT JOIN relay_pubkey_counts rpc ON dr.url = rpc.relay_url
+		ORDER BY COALESCE(rpc.pubkey_count, 0) DESC, dr.events_contributed DESC`
+	} else {
+		query = `
 		WITH relay_pubkey_counts AS (
 			SELECT
 				json_extract(tag.value, '$[1]') as relay_url,
@@ -160,8 +209,9 @@ func (s *Storage) GetRelayStats(ctx context.Context) ([]DiscoveredRelay, error) 
 			dr.events_contributed, dr.is_active, COALESCE(rpc.pubkey_count, 0)
 		FROM discovered_relays dr
 		LEFT JOIN relay_pubkey_counts rpc ON dr.url = rpc.relay_url
-		ORDER BY COALESCE(rpc.pubkey_count, 0) DESC, dr.events_contributed DESC
-	`)
+		ORDER BY COALESCE(rpc.pubkey_count, 0) DESC, dr.events_contributed DESC`
+	}
+	rows, err := dbConn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -206,13 +256,23 @@ func (s *Storage) GetRawRelayURLsFromEvents(ctx context.Context) ([]string, erro
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
-		SELECT DISTINCT json_extract(tag.value, '$[1]')
-		FROM event, json_each(event.tags) as tag
-		WHERE event.kind = 10002
-		  AND json_extract(tag.value, '$[0]') = 'r'
-		  AND json_extract(tag.value, '$[1]') IS NOT NULL
-	`)
+	var query string
+	if s.isPostgres() {
+		query = `
+			SELECT DISTINCT tag->>1
+			FROM event, jsonb_array_elements(event.tags) as tag
+			WHERE event.kind = 10002
+			  AND tag->>0 = 'r'
+			  AND tag->>1 IS NOT NULL`
+	} else {
+		query = `
+			SELECT DISTINCT json_extract(tag.value, '$[1]')
+			FROM event, json_each(event.tags) as tag
+			WHERE event.kind = 10002
+			  AND json_extract(tag.value, '$[0]') = 'r'
+			  AND json_extract(tag.value, '$[1]') IS NOT NULL`
+	}
+	rows, err := dbConn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -269,11 +329,11 @@ func (s *Storage) GetProfileFetchAttempt(ctx context.Context, pubkey string) (*P
 	var attempt ProfileFetchAttempt
 	var k0, k3, k10002 int
 
-	err := dbConn.QueryRowContext(ctx, `
+	err := dbConn.QueryRowContext(ctx, s.rebind(`
 		SELECT pubkey, last_attempt, fetched_kind_0, fetched_kind_3, fetched_kind_10002
 		FROM profile_fetch_attempts
 		WHERE pubkey = ?
-	`, pubkey).Scan(&attempt.Pubkey, &attempt.LastAttempt, &k0, &k3, &k10002)
+	`), pubkey).Scan(&attempt.Pubkey, &attempt.LastAttempt, &k0, &k3, &k10002)
 
 	if err != nil {
 		return nil, nil
@@ -304,15 +364,15 @@ func (s *Storage) RecordProfileFetchAttempt(ctx context.Context, pubkey string, 
 		k10002 = 1
 	}
 
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO profile_fetch_attempts (pubkey, last_attempt, fetched_kind_0, fetched_kind_3, fetched_kind_10002)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(pubkey) DO UPDATE SET
 			last_attempt = excluded.last_attempt,
-			fetched_kind_0 = CASE WHEN excluded.fetched_kind_0 = 1 THEN 1 ELSE fetched_kind_0 END,
-			fetched_kind_3 = CASE WHEN excluded.fetched_kind_3 = 1 THEN 1 ELSE fetched_kind_3 END,
-			fetched_kind_10002 = CASE WHEN excluded.fetched_kind_10002 = 1 THEN 1 ELSE fetched_kind_10002 END
-	`, pubkey, now, k0, k3, k10002)
+			fetched_kind_0 = CASE WHEN excluded.fetched_kind_0 = 1 THEN 1 ELSE profile_fetch_attempts.fetched_kind_0 END,
+			fetched_kind_3 = CASE WHEN excluded.fetched_kind_3 = 1 THEN 1 ELSE profile_fetch_attempts.fetched_kind_3 END,
+			fetched_kind_10002 = CASE WHEN excluded.fetched_kind_10002 = 1 THEN 1 ELSE profile_fetch_attempts.fetched_kind_10002 END
+	`), pubkey, now, k0, k3, k10002)
 
 	return err
 }
@@ -334,12 +394,12 @@ func (s *Storage) GetRecentProfileFetchAttempts(ctx context.Context, limit int) 
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT pubkey, last_attempt, fetched_kind_0, fetched_kind_3, fetched_kind_10002
 		FROM profile_fetch_attempts
 		ORDER BY last_attempt DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +444,31 @@ func (s *Storage) GetFollowerCounts(ctx context.Context, minFollowers int) (map[
 	}
 
 	// Optimized query: find latest kind 3 per author, extract p tags, count followers
-	query := `
+	var query string
+	if s.isPostgres() {
+		query = `
+		WITH latest_contact_lists AS (
+			SELECT e1.id, e1.tags
+			FROM event e1
+			INNER JOIN (
+				SELECT pubkey, MAX(created_at) as max_created_at
+				FROM event
+				WHERE kind = 3
+				GROUP BY pubkey
+			) e2 ON e1.pubkey = e2.pubkey AND e1.created_at = e2.max_created_at
+			WHERE e1.kind = 3
+		)
+		SELECT
+			tag->>1 as followed_pubkey,
+			COUNT(*) as follower_count
+		FROM latest_contact_lists,
+			jsonb_array_elements(latest_contact_lists.tags) as tag
+		WHERE tag->>0 = 'p'
+		  AND tag->>1 IS NOT NULL
+		GROUP BY followed_pubkey
+		HAVING COUNT(*) >= $1`
+	} else {
+		query = `
 		WITH latest_contact_lists AS (
 			SELECT e1.id, e1.tags
 			FROM event e1
@@ -404,8 +488,8 @@ func (s *Storage) GetFollowerCounts(ctx context.Context, minFollowers int) (map[
 		WHERE json_extract(tag.value, '$[0]') = 'p'
 		  AND json_extract(tag.value, '$[1]') IS NOT NULL
 		GROUP BY followed_pubkey
-		HAVING follower_count >= ?
-	`
+		HAVING follower_count >= ?`
+	}
 
 	rows, err := dbConn.QueryContext(ctx, query, minFollowers)
 	if err != nil {
@@ -478,19 +562,7 @@ func (s *Storage) GetTrustedSyncQueue(ctx context.Context, pubkeys []string, lim
 		return nil, nil
 	}
 
-	// Query returns pubkeys ordered by last_synced_at (nulls/missing first via LEFT JOIN)
-	query := `
-		WITH input_pubkeys(pk) AS (
-			SELECT value FROM json_each(?)
-		)
-		SELECT ip.pk, COALESCE(ts.last_synced_at, 0) as last_synced_at
-		FROM input_pubkeys ip
-		LEFT JOIN trusted_sync_state ts ON ip.pk = ts.pubkey
-		ORDER BY last_synced_at ASC
-		LIMIT ?
-	`
-
-	// Convert pubkeys to JSON array for json_each
+	// Convert pubkeys to JSON array
 	pubkeysJSON := "["
 	for i, pk := range pubkeys {
 		if i > 0 {
@@ -499,6 +571,30 @@ func (s *Storage) GetTrustedSyncQueue(ctx context.Context, pubkeys []string, lim
 		pubkeysJSON += fmt.Sprintf(`"%s"`, pk)
 	}
 	pubkeysJSON += "]"
+
+	// Query returns pubkeys ordered by last_synced_at (nulls/missing first via LEFT JOIN)
+	var query string
+	if s.isPostgres() {
+		query = `
+		WITH input_pubkeys(pk) AS (
+			SELECT jsonb_array_elements_text($1::jsonb)
+		)
+		SELECT ip.pk, COALESCE(ts.last_synced_at, 0) as last_synced_at
+		FROM input_pubkeys ip
+		LEFT JOIN trusted_sync_state ts ON ip.pk = ts.pubkey
+		ORDER BY last_synced_at ASC
+		LIMIT $2`
+	} else {
+		query = `
+		WITH input_pubkeys(pk) AS (
+			SELECT value FROM json_each(?)
+		)
+		SELECT ip.pk, COALESCE(ts.last_synced_at, 0) as last_synced_at
+		FROM input_pubkeys ip
+		LEFT JOIN trusted_sync_state ts ON ip.pk = ts.pubkey
+		ORDER BY last_synced_at ASC
+		LIMIT ?`
+	}
 
 	rows, err := dbConn.QueryContext(ctx, query, pubkeysJSON, limit)
 	if err != nil {
@@ -525,11 +621,11 @@ func (s *Storage) UpdateTrustedSyncState(ctx context.Context, pubkey string) err
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO trusted_sync_state (pubkey, last_synced_at)
 		VALUES (?, ?)
 		ON CONFLICT(pubkey) DO UPDATE SET last_synced_at = excluded.last_synced_at
-	`, pubkey, now)
+	`), pubkey, now)
 
 	return err
 }
@@ -541,13 +637,13 @@ func (s *Storage) RecordTrustedSyncRelayStat(ctx context.Context, relayURL, pubk
 	}
 
 	now := time.Now().Unix()
-	_, err := dbConn.ExecContext(ctx, `
+	_, err := dbConn.ExecContext(ctx, s.rebind(`
 		INSERT INTO trusted_sync_relay_stats (relay_url, pubkey, events_fetched, last_sync_at)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(relay_url, pubkey) DO UPDATE SET
-			events_fetched = events_fetched + excluded.events_fetched,
+			events_fetched = trusted_sync_relay_stats.events_fetched + excluded.events_fetched,
 			last_sync_at = excluded.last_sync_at
-	`, relayURL, pubkey, eventsFetched, now)
+	`), relayURL, pubkey, eventsFetched, now)
 
 	return err
 }
@@ -605,7 +701,7 @@ func (s *Storage) GetTrustedSyncPubkeyStats(ctx context.Context, limit int) ([]T
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT
 			pubkey,
 			SUM(events_fetched) as total_events,
@@ -615,7 +711,7 @@ func (s *Storage) GetTrustedSyncPubkeyStats(ctx context.Context, limit int) ([]T
 		GROUP BY pubkey
 		ORDER BY total_events DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -701,27 +797,14 @@ func (s *Storage) CheckPubkeyEventKinds(ctx context.Context, pubkeys []string) (
 		placeholders[i] = pk
 	}
 
-	// Single query that checks all three kinds for all pubkeys
-	query := `
-		SELECT
-			pubkey,
-			MAX(CASE WHEN kind = 0 THEN 1 ELSE 0 END) as has_kind_0,
-			MAX(CASE WHEN kind = 3 THEN 1 ELSE 0 END) as has_kind_3,
-			MAX(CASE WHEN kind = 10002 THEN 1 ELSE 0 END) as has_kind_10002
-		FROM event
-		WHERE pubkey IN (?` + string(make([]byte, len(pubkeys)-1)) + `)
-		  AND kind IN (0, 3, 10002)
-		GROUP BY pubkey
-	`
-
-	// Replace placeholders
-	query = "SELECT pubkey, MAX(CASE WHEN kind = 0 THEN 1 ELSE 0 END) as has_kind_0, MAX(CASE WHEN kind = 3 THEN 1 ELSE 0 END) as has_kind_3, MAX(CASE WHEN kind = 10002 THEN 1 ELSE 0 END) as has_kind_10002 FROM event WHERE pubkey IN (?"
+	// Build placeholder string
+	query := "SELECT pubkey, MAX(CASE WHEN kind = 0 THEN 1 ELSE 0 END) as has_kind_0, MAX(CASE WHEN kind = 3 THEN 1 ELSE 0 END) as has_kind_3, MAX(CASE WHEN kind = 10002 THEN 1 ELSE 0 END) as has_kind_10002 FROM event WHERE pubkey IN (?"
 	for i := 1; i < len(pubkeys); i++ {
 		query += ",?"
 	}
 	query += ") AND kind IN (0, 3, 10002) GROUP BY pubkey"
 
-	rows, err := dbConn.QueryContext(ctx, query, placeholders...)
+	rows, err := dbConn.QueryContext(ctx, s.rebind(query), placeholders...)
 	if err != nil {
 		return nil, err
 	}

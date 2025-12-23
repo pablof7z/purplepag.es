@@ -95,10 +95,11 @@ func (s *Storage) ArchiveEvent(ctx context.Context, evt *nostr.Event) error {
 	}
 
 	now := time.Now().Unix()
-	_, err = dbConn.ExecContext(ctx, `
-		INSERT OR IGNORE INTO event_history (id, pubkey, kind, created_at, content, tags, sig, archived_at)
+	_, err = dbConn.ExecContext(ctx, s.rebind(`
+		INSERT INTO event_history (id, pubkey, kind, created_at, content, tags, sig, archived_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, evt.ID, evt.PubKey, evt.Kind, evt.CreatedAt, evt.Content, string(tagsJSON), evt.Sig, now)
+		ON CONFLICT(id) DO NOTHING
+	`), evt.ID, evt.PubKey, evt.Kind, evt.CreatedAt, evt.Content, string(tagsJSON), evt.Sig, now)
 
 	return err
 }
@@ -110,13 +111,13 @@ func (s *Storage) GetEventHistory(ctx context.Context, pubkey string, kind int, 
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT id, pubkey, kind, created_at, content, tags, archived_at
 		FROM event_history
 		WHERE pubkey = ? AND kind = ?
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, pubkey, kind, limit)
+	`), pubkey, kind, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,13 +146,13 @@ func (s *Storage) GetAllEventHistory(ctx context.Context, pubkey string, limit i
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT id, pubkey, kind, created_at, content, tags, archived_at
 		FROM event_history
 		WHERE pubkey = ?
 		ORDER BY created_at DESC
 		LIMIT ?
-	`, pubkey, limit)
+	`), pubkey, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -189,20 +190,20 @@ func (s *Storage) GetRecentChanges(ctx context.Context, kind int, limit int) ([]
 	var err error
 
 	if kind > 0 {
-		rows, err = dbConn.QueryContext(ctx, `
+		rows, err = dbConn.QueryContext(ctx, s.rebind(`
 			SELECT id, pubkey, kind, created_at, content, tags, archived_at
 			FROM event_history
 			WHERE kind = ?
 			ORDER BY archived_at DESC
 			LIMIT ?
-		`, kind, limit)
+		`), kind, limit)
 	} else {
-		rows, err = dbConn.QueryContext(ctx, `
+		rows, err = dbConn.QueryContext(ctx, s.rebind(`
 			SELECT id, pubkey, kind, created_at, content, tags, archived_at
 			FROM event_history
 			ORDER BY archived_at DESC
 			LIMIT ?
-		`, limit)
+		`), limit)
 	}
 	if err != nil {
 		return nil, err
@@ -386,12 +387,12 @@ func (s *Storage) GetPubkeysWithHistory(ctx context.Context, limit int) ([]strin
 		return nil, nil
 	}
 
-	rows, err := dbConn.QueryContext(ctx, `
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
 		SELECT DISTINCT pubkey
 		FROM event_history
 		ORDER BY (SELECT MAX(archived_at) FROM event_history eh WHERE eh.pubkey = event_history.pubkey) DESC
 		LIMIT ?
-	`, limit)
+	`), limit)
 	if err != nil {
 		return nil, err
 	}
