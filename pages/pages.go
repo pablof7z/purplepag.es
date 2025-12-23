@@ -232,28 +232,14 @@ func (h *Handler) HandleProfile(w http.ResponseWriter, r *http.Request) {
 				fp := h.getProfile(fpubkey)
 				fp.Npub = convertToNpub(fpubkey)
 				following = append(following, fp)
-				if len(following) >= 100 {
-					break
-				}
 			}
 		}
 		profile.FollowingCount = len(following)
 	}
 
-	allContactLists, _ := h.storage.QueryEvents(context.Background(), nostr.Filter{
-		Kinds: []int{3},
-	})
-
-	followerCount := 0
-	for _, evt := range allContactLists {
-		for _, tag := range evt.Tags {
-			if len(tag) >= 2 && tag[0] == "p" && tag[1] == pubkey {
-				followerCount++
-				break
-			}
-		}
-	}
-	profile.FollowerCount = followerCount
+	// Get follower count from storage
+	followerCount, _ := h.storage.GetFollowerCount(context.Background(), pubkey)
+	profile.FollowerCount = int(followerCount)
 
 	data := struct {
 		Profile   Profile

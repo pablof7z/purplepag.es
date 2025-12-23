@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 )
 
@@ -406,6 +407,38 @@ func (s *Storage) GetFollowerTrends(ctx context.Context, limit int) (rising []Fo
 	}
 
 	return rising, falling, nil
+}
+
+// GetFollowerCount returns the number of followers for a specific pubkey
+func (s *Storage) GetFollowerCount(ctx context.Context, pubkey string) (int64, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0, nil
+	}
+
+	var count int64
+	var err error
+
+	// Use JSON query to efficiently count contact lists containing this pubkey
+	if s.isPostgres() {
+		// PostgreSQL: use JSONB containment operator
+		err = dbConn.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM event
+			WHERE kind = 3
+			AND tags @> $1::jsonb
+		`, fmt.Sprintf(`[["p","%s"]]`, pubkey)).Scan(&count)
+	} else {
+		// SQLite: use JSON_EXTRACT with LIKE
+		err = dbConn.QueryRowContext(ctx, `
+			SELECT COUNT(DISTINCT pubkey)
+			FROM event
+			WHERE kind = 3
+			AND tags LIKE '%["p","' || ? || '"%'
+		`, pubkey).Scan(&count)
+	}
+
+	return count, err
 }
 
 // GetSocialGraphStats returns summary statistics
