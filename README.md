@@ -24,7 +24,7 @@ A specialized Nostr relay built with [khatru](https://khatru.nostr.technology/) 
   - Trust propagation from largest connected component
   - Manual spam purging with confirmation
 
-- **SQLite3 Storage**: Fast, reliable database storage with no content size limits
+- **PostgreSQL Storage**: Scalable, reliable database storage with advanced query capabilities
 
 - **Statistics Dashboard**:
   - `/stats` - Relay statistics, event counts, discovered relays
@@ -63,7 +63,7 @@ The relay is configured via `config.json`:
     "port": 3335
   },
   "storage": {
-    "backend": "sqlite3",
+    "backend": "lmdb",
     "path": "./data/purplepages.db"
   },
   "allowed_kinds": [0, 3, 10000, 10001, ...],
@@ -90,7 +90,7 @@ The relay is configured via `config.json`:
 - `relay.*`: NIP-11 relay information metadata
 - `server.host`: Interface to bind to (default: 0.0.0.0)
 - `server.port`: Port to listen on (default: 3335)
-- `storage.backend`: Storage backend ("sqlite3" or "lmdb")
+- `storage.backend`: Storage backend ("lmdb" or "postgresql")
 - `storage.path`: Path to storage file/directory
 - `allowed_kinds`: Array of event kinds to accept
 - `sync.enabled`: Enable/disable automatic sync on startup

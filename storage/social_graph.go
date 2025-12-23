@@ -417,26 +417,14 @@ func (s *Storage) GetFollowerCount(ctx context.Context, pubkey string) (int64, e
 	}
 
 	var count int64
-	var err error
 
-	// Use JSON query to efficiently count contact lists containing this pubkey
-	if s.isPostgres() {
-		// PostgreSQL: use JSONB containment operator
-		err = dbConn.QueryRowContext(ctx, `
-			SELECT COUNT(*)
-			FROM event
-			WHERE kind = 3
-			AND tags @> $1::jsonb
-		`, fmt.Sprintf(`[["p","%s"]]`, pubkey)).Scan(&count)
-	} else {
-		// SQLite: use JSON_EXTRACT with LIKE
-		err = dbConn.QueryRowContext(ctx, `
-			SELECT COUNT(DISTINCT pubkey)
-			FROM event
-			WHERE kind = 3
-			AND tags LIKE '%["p","' || ? || '"%'
-		`, pubkey).Scan(&count)
-	}
+	// Use JSONB containment operator for fast counting
+	err := dbConn.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM event
+		WHERE kind = 3
+		AND tags @> $1::jsonb
+	`, fmt.Sprintf(`[["p","%s"]]`, pubkey)).Scan(&count)
 
 	return count, err
 }

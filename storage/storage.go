@@ -5,23 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/fiatjaf/eventstore"
 	"github.com/fiatjaf/eventstore/lmdb"
 	"github.com/fiatjaf/eventstore/postgresql"
-	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/nbd-wtf/go-nostr"
 )
 
 type Storage struct {
-	db                  eventstore.Store
-	archiveEnabled      bool
-	analyticsDB         *sqlx.DB // Separate database connection for analytics (PostgreSQL or SQLite)
-	analyticsIsPostgres bool     // True if analyticsDB is PostgreSQL
+	db             eventstore.Store
+	archiveEnabled bool
+	analyticsDB    *sqlx.DB // Separate PostgreSQL database for analytics
 }
 
 func New(backend, path string, archiveEnabled bool, analyticsDBURL string) (*Storage, error) {
@@ -33,18 +30,13 @@ func New(backend, path string, archiveEnabled bool, analyticsDBURL string) (*Sto
 			Path:    path,
 			MapSize: 1 << 34, // 16GB
 		}
-	case "sqlite3":
-		db = &sqlite3.SQLite3Backend{
-			DatabaseURL: path,
-			QueryLimit:  1000000,
-		}
 	case "postgresql":
 		db = &postgresql.PostgresBackend{
 			DatabaseURL: path,
 			QueryLimit:  1000000,
 		}
 	default:
-		return nil, fmt.Errorf("unsupported storage backend: %s (supported: lmdb, sqlite3, postgresql)", backend)
+		return nil, fmt.Errorf("unsupported storage backend: %s (supported: lmdb, postgresql)", backend)
 	}
 
 	if err := db.Init(); err != nil {
@@ -53,34 +45,14 @@ func New(backend, path string, archiveEnabled bool, analyticsDBURL string) (*Sto
 
 	storage := &Storage{db: db, archiveEnabled: archiveEnabled}
 
-	// Connect to separate analytics database if provided
+	// Connect to separate analytics database if provided (PostgreSQL only)
 	if analyticsDBURL != "" {
-		var analyticsDB *sqlx.DB
-		var err error
-
-		// Detect database type: PostgreSQL URLs start with postgres://, everything else is SQLite
-		if strings.HasPrefix(analyticsDBURL, "postgres://") {
-			analyticsDB, err = sqlx.Connect("postgres", analyticsDBURL)
-			storage.analyticsIsPostgres = true
-			log.Printf("Connected to separate analytics database (PostgreSQL): %s", analyticsDBURL)
-		} else {
-			// Treat as SQLite file path
-			analyticsDB, err = sqlx.Connect("sqlite3", analyticsDBURL)
-			storage.analyticsIsPostgres = false
-			log.Printf("Connected to separate analytics database (SQLite): %s", analyticsDBURL)
-		}
-
+		analyticsDB, err := sqlx.Connect("postgres", analyticsDBURL)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to analytics database: %w", err)
 		}
 		storage.analyticsDB = analyticsDB
-	}
-
-	// Apply SQLite optimizations if using SQLite
-	if backend == "sqlite3" {
-		if err := storage.ApplySQLiteOptimizations(); err != nil {
-			return nil, fmt.Errorf("failed to apply SQLite optimizations: %w", err)
-		}
+		log.Printf("Connected to separate analytics database (PostgreSQL): %s", analyticsDBURL)
 	}
 
 
@@ -89,50 +61,6 @@ func New(backend, path string, archiveEnabled bool, analyticsDBURL string) (*Sto
 	}
 
 	return storage, nil
-}
-
-func (s *Storage) ApplySQLiteOptimizations() error {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil
-	}
-
-	optimizations := []string{
-		// Enable WAL mode for better concurrency
-		"PRAGMA journal_mode=WAL",
-		// Reduce fsync frequency (faster, but slightly less durable)
-		"PRAGMA synchronous=NORMAL",
-		// Use 64MB cache (negative value = KB)
-		"PRAGMA cache_size=-64000",
-		// Store temp tables in memory
-		"PRAGMA temp_store=MEMORY",
-		// Use memory-mapped I/O for reads (256MB)
-		"PRAGMA mmap_size=268435456",
-	}
-
-	for _, pragma := range optimizations {
-		if _, err := dbConn.Exec(pragma); err != nil {
-			return fmt.Errorf("failed to execute %s: %w", pragma, err)
-		}
-	}
-
-	// Add strategic indexes for hydrator queries
-	indexes := []string{
-		// Index for counting events by kind (used by stats page)
-		"CREATE INDEX IF NOT EXISTS idx_event_kind ON event(kind)",
-		// Composite index for kind+pubkey lookups (used by CheckPubkeyEventKinds)
-		"CREATE INDEX IF NOT EXISTS idx_kind_pubkey ON event(kind, pubkey)",
-		// Index for profile searches (kind 0 events sorted by created_at)
-		"CREATE INDEX IF NOT EXISTS idx_kind_created ON event(kind, created_at DESC)",
-	}
-
-	for _, indexSQL := range indexes {
-		if _, err := dbConn.Exec(indexSQL); err != nil {
-			return fmt.Errorf("failed to create index: %w", err)
-		}
-	}
-
-	return nil
 }
 
 func (s *Storage) SaveEvent(ctx context.Context, evt *nostr.Event) error {
@@ -278,32 +206,17 @@ func (s *Storage) SearchProfiles(ctx context.Context, query string, limit int) (
 	}
 
 	// Search in content field (which contains JSON with name, display_name, about, nip05)
-	// Also search by pubkey prefix
-	// Use ILIKE for PostgreSQL, LIKE with COLLATE NOCASE for SQLite
-	var sql string
-	if s.isPostgres() {
-		sql = `
-			SELECT id, pubkey, created_at, kind, tags, content, sig
-			FROM event
-			WHERE kind = 0
-			AND (
-				content ILIKE '%' || $1 || '%'
-				OR pubkey LIKE $2 || '%'
-			)
-			ORDER BY created_at DESC
-			LIMIT $3`
-	} else {
-		sql = `
-			SELECT id, pubkey, created_at, kind, tags, content, sig
-			FROM event
-			WHERE kind = 0
-			AND (
-				content LIKE '%' || ? || '%' COLLATE NOCASE
-				OR pubkey LIKE ? || '%'
-			)
-			ORDER BY created_at DESC
-			LIMIT ?`
-	}
+	// Also search by pubkey prefix using PostgreSQL ILIKE (case-insensitive)
+	sql := `
+		SELECT id, pubkey, created_at, kind, tags, content, sig
+		FROM event
+		WHERE kind = 0
+		AND (
+			content ILIKE '%' || $1 || '%'
+			OR pubkey LIKE $2 || '%'
+		)
+		ORDER BY created_at DESC
+		LIMIT $3`
 
 	rows, err := dbConn.QueryContext(ctx, sql, query, query, limit*2) // Fetch extra to account for duplicates
 	if err != nil {

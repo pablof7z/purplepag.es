@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fiatjaf/eventstore/postgresql"
-	"github.com/fiatjaf/eventstore/sqlite3"
 	"github.com/jmoiron/sqlx"
 	"github.com/nbd-wtf/go-nostr"
 )
@@ -28,10 +27,8 @@ func (s *Storage) getDBConn() *sqlx.DB {
 		return s.analyticsDB
 	}
 
-	// Fallback: try to extract from eventstore (for backwards compatibility)
+	// Fallback: try to extract from eventstore
 	switch db := s.db.(type) {
-	case *sqlite3.SQLite3Backend:
-		return db.DB
 	case *postgresql.PostgresBackend:
 		return db.DB
 	default:
@@ -39,23 +36,18 @@ func (s *Storage) getDBConn() *sqlx.DB {
 	}
 }
 
+// isPostgres always returns true since we only support PostgreSQL/LMDB
 func (s *Storage) isPostgres() bool {
-	// Check if we have a separate analytics DB and it's PostgreSQL
-	if s.analyticsDB != nil {
-		return s.analyticsIsPostgres
-	}
-
-	// Fallback: check eventstore backend type
-	_, ok := s.db.(*postgresql.PostgresBackend)
-	return ok
+	return true
 }
 
 // rebind converts ? placeholders to $1, $2, etc. for PostgreSQL
 func (s *Storage) rebind(query string) string {
 	dbConn := s.getDBConn()
-	if dbConn == nil || !s.isPostgres() {
+	if dbConn == nil {
 		return query
 	}
+	// Always use PostgreSQL parameter binding
 	return dbConn.Rebind(query)
 }
 
