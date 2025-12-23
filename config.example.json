@@ -14,14 +14,15 @@
     "port": 3335
   },
   "storage": {
-    "backend": "sqlite3",
-    "path": "./data/purplepages.db"
+    "backend": "lmdb",
+    "path": "./data/events.lmdb",
+    "analytics_db_url": "./data/analytics.db"
   },
   "allowed_kinds": [0, 3, "10000-19999", "30000-39999"],
   "sync": {
-    "enabled": false,
-    "relays": [],
-    "kinds": []
+    "enabled": true,
+    "relays": ["wss://relay.damus.io"],
+    "kinds": [3]
   },
   "trusted_sync": {
     "interval_minutes": 30,
