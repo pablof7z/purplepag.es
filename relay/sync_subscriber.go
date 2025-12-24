@@ -74,11 +74,9 @@ func (s *SyncSubscriber) connectAndSubscribe(ctx context.Context, relayURL strin
 	}
 	defer relay.Close()
 
-	// Subscribe with all sync kinds, no time filter (get everything new)
-	now := nostr.Now()
+	// Subscribe with all sync kinds
 	filter := nostr.Filter{
 		Kinds: s.kinds,
-		Since: &now,
 	}
 
 	sub, err := relay.Subscribe(ctx, []nostr.Filter{filter})
