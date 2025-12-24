@@ -384,6 +384,29 @@ func main() {
 		}()
 	}
 
+	// Cross-kind sync: runs once after startup to fill gaps between sync kinds
+	var crossKindSyncer *relay2.CrossKindSyncer
+	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
+		crossKindSyncKinds := cfg.Sync.Kinds
+		if len(crossKindSyncKinds) == 0 {
+			crossKindSyncKinds = cfg.SyncKinds
+		}
+		if len(crossKindSyncKinds) >= 2 {
+			crossKindSyncer = relay2.NewCrossKindSyncer(
+				store,
+				cfg.Sync.Relays,
+				crossKindSyncKinds,
+				500,  // batch size
+				1000, // 1 second delay between batches
+				30,   // 30 second timeout per relay
+			)
+			go func() {
+				time.Sleep(1 * time.Minute) // Wait for initial sync to settle
+				crossKindSyncer.RunOnce(ctx)
+			}()
+		}
+	}
+
 	pageHandler := pages.NewHandler(store)
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
@@ -462,6 +485,9 @@ func main() {
 	}
 	if trustedSyncer != nil {
 		trustedSyncer.Stop()
+	}
+	if crossKindSyncer != nil {
+		crossKindSyncer.Stop()
 	}
 
 	if err := server.Shutdown(context.Background()); err != nil {
