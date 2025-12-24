@@ -407,6 +407,17 @@ func main() {
 		}
 	}
 
+	// Persistent sync subscriber: keeps REQ open on all sync relays for all sync kinds
+	var syncSubscriber *relay2.SyncSubscriber
+	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
+		syncSubKinds := cfg.Sync.Kinds
+		if len(syncSubKinds) == 0 {
+			syncSubKinds = cfg.SyncKinds
+		}
+		syncSubscriber = relay2.NewSyncSubscriber(store, cfg.Sync.Relays, syncSubKinds)
+		go syncSubscriber.Start(ctx)
+	}
+
 	pageHandler := pages.NewHandler(store)
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
@@ -488,6 +499,9 @@ func main() {
 	}
 	if crossKindSyncer != nil {
 		crossKindSyncer.Stop()
+	}
+	if syncSubscriber != nil {
+		syncSubscriber.Stop()
 	}
 
 	if err := server.Shutdown(context.Background()); err != nil {
