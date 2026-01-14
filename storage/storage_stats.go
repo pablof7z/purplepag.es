@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/fiatjaf/eventstore/lmdb"
@@ -39,75 +40,34 @@ func (s *Storage) InitStorageStatsSchema() error {
 
 // GetEventTableSize returns the size of the event table in bytes
 func (s *Storage) GetEventTableSize(ctx context.Context) (int64, error) {
-	// For LMDB, we need to get the file size
 	if lmdbBackend, ok := s.db.(*lmdb.LMDBBackend); ok {
-		stat, err := os.Stat(lmdbBackend.Path)
+		dataPath := filepath.Join(lmdbBackend.Path, "data.mdb")
+		stat, err := os.Stat(dataPath)
 		if err != nil {
-			return 0, fmt.Errorf("failed to stat LMDB file: %w", err)
+			return 0, fmt.Errorf("failed to stat LMDB data file: %w", err)
 		}
 		return stat.Size(), nil
 	}
 
-	// For SQL backends, query the database
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, fmt.Errorf("database connection not available")
-	}
-
-	var size int64
-	var err error
-
-	if s.isPostgres() {
-		// PostgreSQL: use pg_total_relation_size
-		err = dbConn.QueryRowContext(ctx, `SELECT pg_total_relation_size('event')`).Scan(&size)
-	} else {
-		// SQLite3: use dbstat virtual table to get page count for event table
-		// Then multiply by page size
-		var pageSize int64
-		err = dbConn.QueryRowContext(ctx, `PRAGMA page_size`).Scan(&pageSize)
-		if err != nil {
-			return 0, fmt.Errorf("failed to get page size: %w", err)
-		}
-
-		var pageCount int64
-		err = dbConn.QueryRowContext(ctx, `
-			SELECT COUNT(DISTINCT pageno)
-			FROM dbstat
-			WHERE name = 'event'
-		`).Scan(&pageCount)
-		if err == nil {
-			size = pageCount * pageSize
-		}
-	}
-
-	return size, err
+	return 0, fmt.Errorf("unsupported storage backend for size")
 }
 
 // GetTotalEventCount returns the total number of events in the event table
 func (s *Storage) GetTotalEventCount(ctx context.Context) (int64, error) {
-	// For LMDB, use the CountEvents method with an empty filter
 	if counter, ok := s.db.(interface {
 		CountEvents(context.Context, nostr.Filter) (int64, error)
 	}); ok {
 		return counter.CountEvents(ctx, nostr.Filter{})
 	}
 
-	// For SQL backends, use direct COUNT query
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, fmt.Errorf("database connection not available")
-	}
-
-	var count int64
-	err := dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM event`).Scan(&count)
-	return count, err
+	return 0, fmt.Errorf("unsupported storage backend for count")
 }
 
 // RecordDailyStorageSnapshot records a daily snapshot of storage stats
 func (s *Storage) RecordDailyStorageSnapshot(ctx context.Context) error {
 	dbConn := s.getDBConn()
 	if dbConn == nil {
-		return fmt.Errorf("storage tracking not supported for LMDB backends (no SQL connection available)")
+		return fmt.Errorf("analytics database not available")
 	}
 
 	size, err := s.GetEventTableSize(ctx)

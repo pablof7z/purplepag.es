@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/pablof7z/purplepag.es/storage"
@@ -140,64 +139,6 @@ func (h *Handler) HandleRankings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tmpl := template.Must(template.New("rankings").Funcs(rankingsFuncs).Parse(rankingsTemplate))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	tmpl.Execute(w, data)
-}
-
-func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-
-	if query == "" {
-		tmpl := template.Must(template.New("search").Funcs(rankingsFuncs).Parse(searchTemplate))
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		tmpl.Execute(w, struct {
-			Query    string
-			Profiles []Profile
-		}{Query: "", Profiles: []Profile{}})
-		return
-	}
-
-	events, err := h.storage.SearchProfiles(context.Background(), query, 100)
-	if err != nil {
-		http.Error(w, "Failed to search", http.StatusInternalServerError)
-		return
-	}
-
-	matches := make([]Profile, 0, len(events))
-	for _, evt := range events {
-		var metadata map[string]interface{}
-		if err := json.Unmarshal([]byte(evt.Content), &metadata); err != nil {
-			continue
-		}
-
-		name, _ := metadata["name"].(string)
-		displayName, _ := metadata["display_name"].(string)
-		about, _ := metadata["about"].(string)
-		nip05, _ := metadata["nip05"].(string)
-		picture, _ := metadata["picture"].(string)
-
-		matches = append(matches, Profile{
-			Pubkey:      evt.PubKey,
-			Name:        name,
-			DisplayName: displayName,
-			Picture:     picture,
-			About:       truncate(about, 150),
-			Nip05:       nip05,
-			Npub:        convertToNpub(evt.PubKey),
-		})
-	}
-
-	data := struct {
-		Query    string
-		Profiles []Profile
-		Count    int
-	}{
-		Query:    query,
-		Profiles: matches,
-		Count:    len(matches),
-	}
-
-	tmpl := template.Must(template.New("search").Funcs(rankingsFuncs).Parse(searchTemplate))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	tmpl.Execute(w, data)
 }

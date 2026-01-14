@@ -3,9 +3,37 @@ package storage
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
+
+	"github.com/nbd-wtf/go-nostr"
 )
+
+func (s *Storage) latestEventsByPubkey(ctx context.Context, kind int) (map[string]*nostr.Event, error) {
+	events, err := s.QueryEvents(ctx, nostr.Filter{Kinds: []int{kind}})
+	if err != nil {
+		return nil, err
+	}
+
+	latest := make(map[string]*nostr.Event)
+	for _, evt := range events {
+		if existing, ok := latest[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
+			latest[evt.PubKey] = evt
+		}
+	}
+
+	return latest, nil
+}
+
+func tagsAsStrings(tags nostr.Tags) [][]string {
+	if tags == nil {
+		return nil
+	}
+	results := make([][]string, 0, len(tags))
+	for _, tag := range tags {
+		results = append(results, tag)
+	}
+	return results
+}
 
 type MutedPubkey struct {
 	Pubkey       string
@@ -37,30 +65,15 @@ type FollowerTrend struct {
 
 // GetMostMutedPubkeys returns pubkeys that appear most frequently in kind 10000 mute lists
 func (s *Storage) GetMostMutedPubkeys(ctx context.Context, limit int) ([]MutedPubkey, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	// Get all mute list events (kind 10000)
-	rows, err := dbConn.QueryContext(ctx, `SELECT tags FROM event WHERE kind = 10000`)
+	latest, err := s.latestEventsByPubkey(ctx, 10000)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	// Count mutes per pubkey
 	muteCounts := make(map[string]int64)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-		for _, tag := range tags {
+	for _, evt := range latest {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "p" {
 				muteCounts[tag[1]]++
 			}
@@ -93,29 +106,13 @@ func (s *Storage) GetMostMutedPubkeys(ctx context.Context, limit int) ([]MutedPu
 
 // getFollowerCountsForPubkeys counts how many kind 3 events have each pubkey in their "p" tags
 func (s *Storage) getFollowerCountsForPubkeys(ctx context.Context, pubkeys map[string]int64) (map[string]int64, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	// Get all contact lists (kind 3)
-	rows, err := dbConn.QueryContext(ctx, `SELECT tags FROM event WHERE kind = 3`)
+	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	followerCounts := make(map[string]int64)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-		for _, tag := range tags {
+	for _, evt := range latest {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "p" {
 				if _, exists := pubkeys[tag[1]]; exists {
 					followerCounts[tag[1]]++
@@ -129,28 +126,14 @@ func (s *Storage) getFollowerCountsForPubkeys(ctx context.Context, pubkeys map[s
 
 // GetInterestRankings returns the most common interests from kind 10015 events
 func (s *Storage) GetInterestRankings(ctx context.Context, limit int) ([]InterestRank, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	rows, err := dbConn.QueryContext(ctx, `SELECT tags FROM event WHERE kind = 10015`)
+	latest, err := s.latestEventsByPubkey(ctx, 10015)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	interestCounts := make(map[string]int64)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-		for _, tag := range tags {
+	for _, evt := range latest {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "t" {
 				interestCounts[tag[1]]++
 			}
@@ -178,28 +161,14 @@ func (s *Storage) GetInterestRankings(ctx context.Context, limit int) ([]Interes
 
 // GetCommunityRankings returns the most popular communities from kind 10004 events
 func (s *Storage) GetCommunityRankings(ctx context.Context, limit int) ([]CommunityRank, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	rows, err := dbConn.QueryContext(ctx, `SELECT tags FROM event WHERE kind = 10004`)
+	latest, err := s.latestEventsByPubkey(ctx, 10004)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	communityCounts := make(map[string]int64)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-		for _, tag := range tags {
+	for _, evt := range latest {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "a" {
 				communityCounts[tag[1]]++
 			}
@@ -227,28 +196,14 @@ func (s *Storage) GetCommunityRankings(ctx context.Context, limit int) ([]Commun
 
 // GetTopFollowed returns pubkeys with the most followers from kind 3 events
 func (s *Storage) GetTopFollowed(ctx context.Context, limit int) ([]FollowerCount, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	rows, err := dbConn.QueryContext(ctx, `SELECT tags FROM event WHERE kind = 3`)
+	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	followerCounts := make(map[string]int64)
-	for rows.Next() {
-		var tagsJSON string
-		if err := rows.Scan(&tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-		for _, tag := range tags {
+	for _, evt := range latest {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "p" {
 				followerCounts[tag[1]]++
 			}
@@ -314,26 +269,14 @@ func (s *Storage) GetFollowerTrends(ctx context.Context, limit int) (rising []Fo
 		}
 	}
 
-	// Get current kind 3 events
-	currentRows, err := dbConn.QueryContext(ctx, `SELECT pubkey, tags FROM event WHERE kind = 3`)
+	currentFollows := make(map[string]map[string]bool)
+	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer currentRows.Close()
-
-	currentFollows := make(map[string]map[string]bool)
-	for currentRows.Next() {
-		var pubkey, tagsJSON string
-		if err := currentRows.Scan(&pubkey, &tagsJSON); err != nil {
-			continue
-		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-
+	for pubkey, evt := range latest {
 		currentFollows[pubkey] = make(map[string]bool)
-		for _, tag := range tags {
+		for _, tag := range tagsAsStrings(evt.Tags) {
 			if len(tag) >= 2 && tag[0] == "p" {
 				currentFollows[pubkey][tag[1]] = true
 			}
@@ -411,43 +354,34 @@ func (s *Storage) GetFollowerTrends(ctx context.Context, limit int) (rising []Fo
 
 // GetFollowerCount returns the number of followers for a specific pubkey
 func (s *Storage) GetFollowerCount(ctx context.Context, pubkey string) (int64, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, nil
+	latest, err := s.latestEventsByPubkey(ctx, 3)
+	if err != nil {
+		return 0, err
 	}
 
 	var count int64
+	for _, evt := range latest {
+		if evt.Tags.ContainsAny("p", []string{pubkey}) {
+			count++
+		}
+	}
 
-	// Use JSONB containment operator for fast counting
-	err := dbConn.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM event
-		WHERE kind = 3
-		AND tags @> $1::jsonb
-	`, fmt.Sprintf(`[["p","%s"]]`, pubkey)).Scan(&count)
-
-	return count, err
+	return count, nil
 }
 
 // GetSocialGraphStats returns summary statistics
 func (s *Storage) GetSocialGraphStats(ctx context.Context) (muteListCount, interestListCount, communityListCount, contactListCount int64, err error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, 0, 0, 0, nil
+	if muteListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10000}}); err != nil {
+		return 0, 0, 0, 0, err
 	}
-
-	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM event WHERE kind = 10000`).Scan(&muteListCount)
-	if err != nil {
-		return
+	if interestListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10015}}); err != nil {
+		return 0, 0, 0, 0, err
 	}
-	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM event WHERE kind = 10015`).Scan(&interestListCount)
-	if err != nil {
-		return
+	if communityListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10004}}); err != nil {
+		return 0, 0, 0, 0, err
 	}
-	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM event WHERE kind = 10004`).Scan(&communityListCount)
-	if err != nil {
-		return
+	if contactListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{3}}); err != nil {
+		return 0, 0, 0, 0, err
 	}
-	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM event WHERE kind = 3`).Scan(&contactListCount)
-	return
+	return muteListCount, interestListCount, communityListCount, contactListCount, nil
 }

@@ -25,32 +25,14 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	Backend        string `json:"backend"`
 	Path           string `json:"path"`
 	ArchiveEnabled *bool  `json:"archive_enabled"`
-	AnalyticsDBURL string `json:"analytics_db_url"` // Optional: separate PostgreSQL for analytics
 }
 
 type SyncConfig struct {
 	Enabled bool     `json:"enabled"`
 	Relays  []string `json:"relays"`
 	Kinds   []int    `json:"kinds"`
-}
-
-type ProfileHydrationConfig struct {
-	Enabled         bool `json:"enabled"`
-	MinFollowers    int  `json:"min_followers"`
-	RetryAfterHours int  `json:"retry_after_hours"`
-	IntervalMinutes int  `json:"interval_minutes"`
-	BatchSize       int  `json:"batch_size"`
-}
-
-type TrustedSyncConfig struct {
-	Disabled        bool  `json:"disabled"` // disabled instead of enabled, so default (false) means enabled
-	IntervalMinutes int   `json:"interval_minutes"`
-	BatchSize       int   `json:"batch_size"`
-	Kinds           []int `json:"kinds"`
-	TimeoutSeconds  int   `json:"timeout_seconds"`
 }
 
 type LimitsConfig struct {
@@ -157,8 +139,6 @@ type Config struct {
 	AllowedKinds     KindSet                `json:"allowed_kinds"`
 	SyncKinds        []int                  `json:"sync_kinds"`
 	Sync             SyncConfig             `json:"sync"`
-	ProfileHydration ProfileHydrationConfig `json:"profile_hydration"`
-	TrustedSync      TrustedSyncConfig      `json:"trusted_sync"`
 	Limits           LimitsConfig           `json:"limits"`
 	StatsPassword    string                 `json:"stats_password"`
 }
@@ -203,34 +183,6 @@ func Load(path string) (*Config, error) {
 	if cfg.Storage.ArchiveEnabled == nil {
 		defaultTrue := true
 		cfg.Storage.ArchiveEnabled = &defaultTrue
-	}
-
-	// Set defaults for profile hydration
-	if cfg.ProfileHydration.MinFollowers == 0 {
-		cfg.ProfileHydration.MinFollowers = 10
-	}
-	if cfg.ProfileHydration.RetryAfterHours == 0 {
-		cfg.ProfileHydration.RetryAfterHours = 24
-	}
-	if cfg.ProfileHydration.IntervalMinutes == 0 {
-		cfg.ProfileHydration.IntervalMinutes = 5
-	}
-	if cfg.ProfileHydration.BatchSize == 0 {
-		cfg.ProfileHydration.BatchSize = 50
-	}
-
-	// Set defaults for trusted sync
-	if cfg.TrustedSync.IntervalMinutes == 0 {
-		cfg.TrustedSync.IntervalMinutes = 30
-	}
-	if cfg.TrustedSync.BatchSize == 0 {
-		cfg.TrustedSync.BatchSize = 50
-	}
-	if len(cfg.TrustedSync.Kinds) == 0 {
-		cfg.TrustedSync.Kinds = cfg.SyncKinds
-	}
-	if cfg.TrustedSync.TimeoutSeconds == 0 {
-		cfg.TrustedSync.TimeoutSeconds = 30
 	}
 
 	// Set defaults for limits

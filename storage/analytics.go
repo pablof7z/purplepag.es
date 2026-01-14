@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"time"
+
+	"github.com/nbd-wtf/go-nostr"
 )
 
 type PubkeyStats struct {
@@ -44,7 +46,6 @@ func (s *Storage) InitAnalyticsSchema() error {
 		return nil
 	}
 
-	// Use SERIAL for PostgreSQL, AUTOINCREMENT for SQLite
 	botClustersTable := `
 	CREATE TABLE IF NOT EXISTS bot_clusters (
 		cluster_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,17 +55,6 @@ func (s *Storage) InitAnalyticsSchema() error {
 		external_ratio REAL NOT NULL,
 		is_active INTEGER NOT NULL DEFAULT 1
 	);`
-	if s.isPostgres() {
-		botClustersTable = `
-	CREATE TABLE IF NOT EXISTS bot_clusters (
-		cluster_id SERIAL PRIMARY KEY,
-		detected_at INTEGER NOT NULL,
-		cluster_size INTEGER NOT NULL,
-		internal_density REAL NOT NULL,
-		external_ratio REAL NOT NULL,
-		is_active INTEGER NOT NULL DEFAULT 1
-	);`
-	}
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS req_analytics (
@@ -576,33 +566,22 @@ func (s *Storage) GetAllRequestedPubkeys(ctx context.Context) (map[string]int64,
 }
 
 func (s *Storage) CountEventsForPubkey(ctx context.Context, pubkey string) (int64, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, nil
-	}
-
-	var count int64
-	err := dbConn.QueryRowContext(ctx, s.rebind(`
-		SELECT COUNT(*) FROM event WHERE pubkey = ?
-	`), pubkey).Scan(&count)
-
-	return count, err
+	return s.CountEvents(ctx, nostr.Filter{Authors: []string{pubkey}})
 }
 
 func (s *Storage) DeleteEventsForPubkeys(ctx context.Context, pubkeys []string) (int64, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return 0, nil
-	}
-
 	var totalDeleted int64
 	for _, pubkey := range pubkeys {
-		result, err := dbConn.ExecContext(ctx, s.rebind(`DELETE FROM event WHERE pubkey = ?`), pubkey)
+		events, err := s.QueryEvents(ctx, nostr.Filter{Authors: []string{pubkey}})
 		if err != nil {
 			return totalDeleted, err
 		}
-		deleted, _ := result.RowsAffected()
-		totalDeleted += deleted
+		for _, evt := range events {
+			if err := s.DeleteEvent(ctx, evt); err != nil {
+				return totalDeleted, err
+			}
+			totalDeleted++
+		}
 	}
 
 	return totalDeleted, nil
@@ -952,21 +931,6 @@ func (s *Storage) SetTrustedPubkeys(ctx context.Context, pubkeys []string) error
 	return tx.Commit()
 }
 
-// IsPubkeyTrusted checks if a pubkey is in the trusted set
-func (s *Storage) IsPubkeyTrusted(ctx context.Context, pubkey string) bool {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return false
-	}
-
-	var count int
-	err := dbConn.QueryRowContext(ctx, s.rebind(`
-		SELECT COUNT(*) FROM trusted_pubkeys WHERE pubkey = ?
-	`), pubkey).Scan(&count)
-
-	return err == nil && count > 0
-}
-
 // GetTrustedPubkeys returns all trusted pubkeys from the database
 func (s *Storage) GetTrustedPubkeys(ctx context.Context) ([]string, error) {
 	dbConn := s.getDBConn()
@@ -994,65 +958,19 @@ func (s *Storage) GetTrustedPubkeys(ctx context.Context) ([]string, error) {
 
 // GetFollowersOfPubkey returns all pubkeys that follow the given pubkey (from their kind:3 events)
 func (s *Storage) GetFollowersOfPubkey(ctx context.Context, pubkey string) ([]string, error) {
-	dbConn := s.getDBConn()
-	if dbConn == nil {
-		return nil, nil
-	}
-
-	// Find the latest kind:3 event per author that has a "p" tag for this pubkey
-	var query string
-	if s.isPostgres() {
-		query = `
-		WITH latest_contact_lists AS (
-			SELECT e1.pubkey as follower, e1.tags
-			FROM event e1
-			INNER JOIN (
-				SELECT pubkey, MAX(created_at) as max_created_at
-				FROM event
-				WHERE kind = 3
-				GROUP BY pubkey
-			) e2 ON e1.pubkey = e2.pubkey AND e1.created_at = e2.max_created_at
-			WHERE e1.kind = 3
-		)
-		SELECT DISTINCT follower
-		FROM latest_contact_lists, jsonb_array_elements(latest_contact_lists.tags) as tag
-		WHERE tag->>0 = 'p'
-		  AND tag->>1 = $1`
-	} else {
-		query = `
-		WITH latest_contact_lists AS (
-			SELECT e1.pubkey as follower, e1.tags
-			FROM event e1
-			INNER JOIN (
-				SELECT pubkey, MAX(created_at) as max_created_at
-				FROM event
-				WHERE kind = 3
-				GROUP BY pubkey
-			) e2 ON e1.pubkey = e2.pubkey AND e1.created_at = e2.max_created_at
-			WHERE e1.kind = 3
-		)
-		SELECT DISTINCT follower
-		FROM latest_contact_lists, json_each(latest_contact_lists.tags) as tag
-		WHERE json_extract(tag.value, '$[0]') = 'p'
-		  AND json_extract(tag.value, '$[1]') = ?`
-	}
-
-	rows, err := dbConn.QueryContext(ctx, query, pubkey)
+	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var followers []string
-	for rows.Next() {
-		var follower string
-		if err := rows.Scan(&follower); err != nil {
-			return nil, err
+	followers := make([]string, 0)
+	for follower, evt := range latest {
+		if evt.Tags.ContainsAny("p", []string{pubkey}) {
+			followers = append(followers, follower)
 		}
-		followers = append(followers, follower)
 	}
 
-	return followers, rows.Err()
+	return followers, nil
 }
 
 // Community types for storage

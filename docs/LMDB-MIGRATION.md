@@ -1,54 +1,15 @@
-# LMDB + PostgreSQL Architecture Migration
+# LMDB Migration (Legacy Postgres Export)
 
 ## Overview
 
-Separate event storage from analytics for better performance:
-- **LMDB**: Fast event storage and queries (via eventstore library)
-- **PostgreSQL**: Analytics data only (stats, graphs, bot detection)
-
-## Architecture
-
-```
-┌─────────────────────┐
-│  Client REQs        │
-└──────┬──────────────┘
-       │
-       v
-┌─────────────────────┐
-│  Relay Process      │
-│  - Event validation │
-│  - LMDB queries     │
-└──────┬──────────────┘
-       │
-       ├──> LMDB (events)
-       │
-       └──> PostgreSQL (lightweight tracking)
-
-┌─────────────────────┐
-│ Analytics Worker    │
-│  - Graph algorithms │
-│  - Bot detection    │
-└──────┬──────────────┘
-       │
-       └──> PostgreSQL (heavy analytics)
-```
+Purplepag.es now uses LMDB for events and a local SQLite analytics database (`analytics.sqlite`).
+If you are migrating from an older PostgreSQL eventstore, export events to JSONL and import them into LMDB.
 
 ## Migration Steps
 
-### 1. Setup PostgreSQL for Analytics
+### 1. Export Events from Old PostgreSQL (optional)
 
 ```bash
-# Create database
-createdb purplepages_analytics
-
-# Initialize schema (run relay once to create tables)
-./purplepages
-```
-
-### 2. Export Events from Current PostgreSQL
-
-```bash
-# Export all events to JSONL
 psql purplepages -c "COPY (SELECT json_build_object(
   'id', id,
   'pubkey', pubkey,
@@ -60,26 +21,23 @@ psql purplepages -c "COPY (SELECT json_build_object(
 ) FROM event) TO STDOUT" > events-export.jsonl
 ```
 
-### 3. Update Config
+### 2. Update Config
 
 ```json
 {
   "storage": {
-    "backend": "lmdb",
-    "path": "./data/events.lmdb",
-    "analytics_db_url": "postgresql://localhost/purplepages_analytics?sslmode=disable"
+    "path": "./data/events.lmdb"
   }
 }
 ```
 
-### 4. Import Events to LMDB
+### 3. Import Events to LMDB
 
 ```bash
-# Import events
 ./purplepages --import events-export.jsonl
 ```
 
-### 5. Start Relay and Analytics Worker
+### 4. Start Relay and Analytics Worker
 
 ```bash
 # Terminal 1: Relay
@@ -89,71 +47,8 @@ psql purplepages -c "COPY (SELECT json_build_object(
 ./purplepages analytics
 ```
 
-## Production Setup
-
-### Systemd Services
-
-**Relay:**
-```ini
-[Unit]
-Description=PurplePages Relay
-After=network.target
-
-[Service]
-Type=simple
-User=purplepages
-WorkingDirectory=/opt/purplepages
-ExecStart=/opt/purplepages/purplepages
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**Analytics:**
-```ini
-[Unit]
-Description=PurplePages Analytics Worker
-After=network.target postgresql.service
-Wants=postgresql.service
-
-[Service]
-Type=simple
-User=purplepages
-WorkingDirectory=/opt/purplepages
-ExecStart=/opt/purplepages/purplepages analytics
-Restart=always
-MemoryMax=2G
-
-[Install]
-WantedBy=multi-user.target
-```
-
-## Performance Expectations
-
-**Before (PostgreSQL eventstore):**
-- Complex tag queries: 500ms - 2s
-- Write contention during analytics
-- Slow hourly graph algorithms blocking queries
-
-**After (LMDB + PostgreSQL):**
-- Event queries: <50ms
-- No write contention (LMDB handles concurrent writes)
-- Analytics runs in separate process
-- Relay stays responsive during heavy analytics
-
-## Rollback Plan
-
-If you need to rollback:
-
-1. Stop relay
-2. Change config back to `"backend": "postgresql"`
-3. Events are still in PostgreSQL (not deleted during migration)
-4. Restart relay
-
 ## Notes
 
-- LMDB file grows to MapSize (16GB) immediately - this is normal
-- Analytics DB is separate - can be on different server if needed
-- Both relay and analytics worker can share same analytics DB
-- LMDB is append-only - use backups for safety
+- The analytics DB (`analytics.sqlite`) is created alongside the LMDB directory.
+- LMDB pre-allocates to its configured MapSize (16GB by default) — this is normal.
+- PostgreSQL is no longer used after migration; keep it only as a backup if desired.

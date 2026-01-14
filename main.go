@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"iter"
 	"log"
 	"net/http"
 	"os"
@@ -14,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	nostr2 "fiatjaf.com/nostr"
+	nostrEventstore "fiatjaf.com/nostr/eventstore"
+	"fiatjaf.com/nostr/khatru"
+	"fiatjaf.com/nostr/nip11"
 	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/khatru"
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip11"
 	"github.com/nbd-wtf/go-nostr/nip77"
 	"github.com/pablof7z/purplepag.es/analytics"
 	"github.com/pablof7z/purplepag.es/config"
@@ -42,29 +46,11 @@ func main() {
 
 	port := flag.Int("port", 0, "Override port from config (use 9999 for sync-only test mode)")
 	importFile := flag.String("import", "", "Import events from JSONL file and exit")
-	testHydrator := flag.Bool("test-hydrator", false, "Run profile hydrator once and show results")
-	benchmarkHydrator := flag.Bool("benchmark-hydrator", false, "Benchmark hydrator performance on production DB")
 	flag.Parse()
 
 	cfg, err := config.Load("config.json")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
-	}
-
-	// Handle test-hydrator mode early (doesn't need production DB)
-	if *testHydrator {
-		if err := runHydratorTestWithCopy(cfg); err != nil {
-			log.Fatalf("Hydrator test failed: %v", err)
-		}
-		os.Exit(0)
-	}
-
-	// Handle benchmark mode
-	if *benchmarkHydrator {
-		if err := runHydratorBenchmark(cfg); err != nil {
-			log.Fatalf("Benchmark failed: %v", err)
-		}
-		os.Exit(0)
 	}
 
 	if *port != 0 {
@@ -73,26 +59,14 @@ func main() {
 
 	testMode := cfg.Server.Port == 9999
 
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
+	store, err := storage.New(cfg.Storage.Path, *cfg.Storage.ArchiveEnabled)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
 
-	if err := store.InitRelayDiscoverySchema(); err != nil {
-		log.Fatalf("Failed to initialize relay discovery schema: %v", err)
-	}
-
-	if err := store.InitProfileHydrationSchema(); err != nil {
-		log.Fatalf("Failed to initialize profile hydration schema: %v", err)
-	}
-
 	if err := store.InitAnalyticsSchema(); err != nil {
 		log.Fatalf("Failed to initialize analytics schema: %v", err)
-	}
-
-	if err := store.InitTrustedSyncSchema(); err != nil {
-		log.Fatalf("Failed to initialize trusted sync schema: %v", err)
 	}
 
 	if err := store.InitDailyStatsSchema(); err != nil {
@@ -119,17 +93,20 @@ func main() {
 	analyticsTracker := analytics.NewTracker(store)
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, 10)
-	discovery := relay2.NewDiscovery(store)
-	if err := discovery.BackfillDiscoveredRelays(context.Background()); err != nil {
-		log.Printf("Warning: failed to backfill discovered relays: %v", err)
-	}
 	syncQueue := relay2.NewSyncQueue(store, cfg.SyncKinds)
 
 	relay := khatru.NewRelay()
 
 	relay.Info.Name = cfg.Relay.Name
 	relay.Info.Description = cfg.Relay.Description
-	relay.Info.PubKey = cfg.Relay.Pubkey
+	if cfg.Relay.Pubkey != "" {
+		pk, err := nostr2.PubKeyFromHex(cfg.Relay.Pubkey)
+		if err != nil {
+			log.Printf("Warning: invalid relay pubkey %q: %v", cfg.Relay.Pubkey, err)
+		} else {
+			relay.Info.PubKey = &pk
+		}
+	}
 	relay.Info.Contact = cfg.Relay.Contact
 	relay.Info.Icon = cfg.Relay.Icon
 	relay.Info.AddSupportedNIPs(cfg.Relay.SupportedNIPs)
@@ -142,10 +119,11 @@ func main() {
 		MaxContentLength: cfg.Limits.MaxContentLength,
 	}
 
-	relay.RejectEvent = append(relay.RejectEvent, func(ctx context.Context, event *nostr.Event) (bool, string) {
-		if !cfg.IsKindAllowed(event.Kind) {
-			statsTracker.RecordEventRejectedForKind(ctx, event.Kind, event.PubKey)
-			return true, fmt.Sprintf("kind %d is not allowed", event.Kind)
+	relay.OnEvent = func(ctx context.Context, event nostr2.Event) (bool, string) {
+		kind := int(event.Kind)
+		if !cfg.IsKindAllowed(kind) {
+			statsTracker.RecordEventRejectedForKind(ctx, kind, event.PubKey.Hex())
+			return true, fmt.Sprintf("kind %d is not allowed", kind)
 		}
 		if len(event.Tags) > cfg.Limits.MaxEventTags {
 			statsTracker.RecordEventRejected()
@@ -156,23 +134,16 @@ func main() {
 			return true, fmt.Sprintf("content too long: %d (max %d)", len(event.Content), cfg.Limits.MaxContentLength)
 		}
 		return false, ""
-	})
+	}
 
-	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
+	relay.OnRequest = func(ctx context.Context, filter nostr2.Filter) (bool, string) {
 		if filter.Limit > cfg.Limits.MaxLimit {
 			return true, fmt.Sprintf("limit too high: %d (max %d)", filter.Limit, cfg.Limits.MaxLimit)
 		}
-		return false, ""
-	})
-
-	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
 		if len(filter.Kinds) == 0 {
 			return true, "filters must specify at least one kind"
 		}
-		return false, ""
-	})
 
-	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
 		ip := khatru.GetIP(ctx)
 		eventsServed, err := store.GetEventsServedLast24Hours(ctx, ip)
 		if err != nil {
@@ -181,48 +152,102 @@ func main() {
 		if eventsServed < int64(cfg.Limits.EventsPerDayLimit) {
 			return false, ""
 		}
-		authedPubkey := khatru.GetAuthed(ctx)
-		if authedPubkey == "" {
-			return true, fmt.Sprintf("auth-required: rate limit exceeded")
+		authedPubkey, ok := khatru.GetAuthed(ctx)
+		if !ok {
+			return true, "auth-required: rate limit exceeded"
 		}
-		trustedFollowers, err := trustAnalyzer.GetTrustedFollowerCount(ctx, authedPubkey)
+		trustedFollowers, err := trustAnalyzer.GetTrustedFollowerCount(ctx, authedPubkey.Hex())
 		if err != nil {
 			return true, "error checking trusted follower count"
 		}
 		if trustedFollowers < cfg.Limits.MinTrustedFollowers {
-			return true, fmt.Sprintf("rate limit exceeded")
+			return true, "rate limit exceeded"
 		}
 		return false, ""
-	})
+	}
 
-	relay.StoreEvent = append(relay.StoreEvent, func(ctx context.Context, event *nostr.Event) error {
+	relay.StoreEvent = func(ctx context.Context, event nostr2.Event) error {
+		goEvent := toGoEvent(event)
 		start := time.Now()
-		if err := store.SaveEvent(ctx, event); err != nil {
+		if err := store.SaveEvent(ctx, goEvent); err != nil {
+			if errors.Is(err, eventstore.ErrDupEvent) {
+				return nostrEventstore.ErrDupEvent
+			}
 			return err
 		}
 		elapsed := time.Since(start)
 		if elapsed > 100*time.Millisecond {
-			log.Printf("SLOW StoreEvent: kind=%d tags=%d elapsed=%v pubkey=%s", event.Kind, len(event.Tags), elapsed, event.PubKey[:8])
+			pubkey := event.PubKey.Hex()
+			if len(pubkey) > 8 {
+				pubkey = pubkey[:8]
+			}
+			log.Printf("SLOW StoreEvent: kind=%d tags=%d elapsed=%v pubkey=%s", int(event.Kind), len(event.Tags), elapsed, pubkey)
 		}
-		statsTracker.RecordEventAccepted(event.Kind)
+		statsTracker.RecordEventAccepted(int(event.Kind))
 		return nil
-	})
+	}
 
-	relay.OnEventSaved = append(relay.OnEventSaved, func(ctx context.Context, event *nostr.Event) {
-		if event.Kind == 10002 {
-			discovery.ExtractRelaysFromEvent(ctx, event)
+	relay.ReplaceEvent = func(ctx context.Context, event nostr2.Event) error {
+		goEvent := toGoEvent(event)
+
+		filter := nostr.Filter{
+			Limit:   1,
+			Kinds:   []int{goEvent.Kind},
+			Authors: []string{goEvent.PubKey},
 		}
-	})
+		if nostr.IsAddressableKind(goEvent.Kind) {
+			filter.Tags = nostr.TagMap{"d": []string{goEvent.Tags.GetD()}}
+		}
 
-	relay.QueryEvents = append(relay.QueryEvents, func(ctx context.Context, filter nostr.Filter) (chan *nostr.Event, error) {
-		analyticsTracker.RecordREQ(filter)
+		existing, err := store.QueryEvents(ctx, filter)
+		if err != nil {
+			return err
+		}
+
+		shouldStore := true
+		for _, previous := range existing {
+			if isOlderEvent(previous, goEvent) {
+				if err := store.DeleteEvent(ctx, previous); err != nil {
+					return err
+				}
+			} else {
+				shouldStore = false
+			}
+		}
+
+		if !shouldStore {
+			return nil
+		}
+
+		start := time.Now()
+		if err := store.SaveEvent(ctx, goEvent); err != nil {
+			if errors.Is(err, eventstore.ErrDupEvent) {
+				return nostrEventstore.ErrDupEvent
+			}
+			return err
+		}
+		elapsed := time.Since(start)
+		if elapsed > 100*time.Millisecond {
+			pubkey := event.PubKey.Hex()
+			if len(pubkey) > 8 {
+				pubkey = pubkey[:8]
+			}
+			log.Printf("SLOW ReplaceEvent: kind=%d tags=%d elapsed=%v pubkey=%s", int(event.Kind), len(event.Tags), elapsed, pubkey)
+		}
+		statsTracker.RecordEventAccepted(int(event.Kind))
+		return nil
+	}
+
+	relay.QueryStored = func(ctx context.Context, filter nostr2.Filter) iter.Seq[nostr2.Event] {
+		analyticsTracker.RecordREQ(toGoFilter(filter))
 
 		// Track REQ kinds for stats and filter out disallowed kinds
-		allowedKinds := make([]int, 0, len(filter.Kinds))
+		allowedKinds := make([]nostr2.Kind, 0, len(filter.Kinds))
 		for _, kind := range filter.Kinds {
-			statsTracker.RecordREQKind(ctx, kind)
-			if !cfg.IsKindAllowed(kind) {
-				statsTracker.RecordRejectedREQ(ctx, kind)
+			kindInt := int(kind)
+			statsTracker.RecordREQKind(ctx, kindInt)
+			if !cfg.IsKindAllowed(kindInt) {
+				statsTracker.RecordRejectedREQ(ctx, kindInt)
 			} else {
 				allowedKinds = append(allowedKinds, kind)
 			}
@@ -230,60 +255,74 @@ func main() {
 
 		// If no allowed kinds remain after filtering, return empty immediately
 		if len(filter.Kinds) > 0 && len(allowedKinds) == 0 {
-			ch := make(chan *nostr.Event)
-			close(ch)
-			return ch, nil
+			return func(yield func(nostr2.Event) bool) {}
 		}
 
 		// Update filter with only allowed kinds
 		filter.Kinds = allowedKinds
 
+		goFilter := toGoFilter(filter)
 		start := time.Now()
-		events, err := store.QueryEvents(ctx, filter)
+		events, err := store.QueryEvents(ctx, goFilter)
 		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 			log.Printf("SLOW QueryEvents: kinds=%v authors=%d tags=%d limit=%d elapsed=%v results=%d",
 				filter.Kinds, len(filter.Authors), len(filter.Tags), filter.Limit, elapsed, len(events))
 		}
 		if err != nil {
-			return nil, err
+			log.Printf("QueryEvents failed: %v", err)
+			return func(yield func(nostr2.Event) bool) {}
 		}
 
 		ip := khatru.GetIP(ctx)
 
-		ch := make(chan *nostr.Event)
-		go func() {
-			defer close(ch)
+		return func(yield func(nostr2.Event) bool) {
 			var count int64
 			for _, evt := range events {
-				select {
-				case ch <- evt:
-					count++
-				case <-ctx.Done():
+				if ctx.Err() != nil {
 					statsTracker.RecordEventsServed(context.Background(), ip, count)
 					return
 				}
+				converted, err := toNostrEvent(evt)
+				if err != nil {
+					log.Printf("Failed to convert event %s: %v", evt.ID, err)
+					continue
+				}
+				if !yield(converted) {
+					statsTracker.RecordEventsServed(context.Background(), ip, count)
+					return
+				}
+				count++
 			}
 			statsTracker.RecordEventsServed(context.Background(), ip, count)
-		}()
+		}
+	}
 
-		return ch, nil
-	})
+	relay.DeleteEvent = func(ctx context.Context, id nostr2.ID) error {
+		return store.DeleteEvent(ctx, &nostr.Event{ID: id.Hex()})
+	}
 
-	relay.DeleteEvent = append(relay.DeleteEvent, func(ctx context.Context, event *nostr.Event) error {
-		return store.DeleteEvent(ctx, event)
-	})
+	relay.Count = func(ctx context.Context, filter nostr2.Filter) (uint32, error) {
+		count, err := store.CountEvents(ctx, toGoFilter(filter))
+		if err != nil {
+			return 0, err
+		}
+		if count <= 0 {
+			return 0, nil
+		}
+		const maxUint32 = int64(^uint32(0))
+		if count > maxUint32 {
+			return ^uint32(0), nil
+		}
+		return uint32(count), nil
+	}
 
-	relay.CountEvents = append(relay.CountEvents, func(ctx context.Context, filter nostr.Filter) (int64, error) {
-		return store.CountEvents(ctx, filter)
-	})
-
-	relay.OnConnect = append(relay.OnConnect, func(ctx context.Context) {
+	relay.OnConnect = func(ctx context.Context) {
 		statsTracker.RecordConnection()
-	})
+	}
 
-	relay.OnDisconnect = append(relay.OnDisconnect, func(ctx context.Context) {
+	relay.OnDisconnect = func(ctx context.Context) {
 		statsTracker.RecordDisconnection()
-	})
+	}
 
 	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
 		syncKinds := cfg.Sync.Kinds
@@ -354,59 +393,6 @@ func main() {
 		syncQueue.Start(ctx)
 	}()
 
-	var hydrator *relay2.ProfileHydrator
-	if cfg.ProfileHydration.Enabled && len(cfg.Sync.Relays) > 0 {
-		hydrator = relay2.NewProfileHydrator(
-			store,
-			cfg.Sync.Relays,
-			cfg.ProfileHydration.MinFollowers,
-			cfg.ProfileHydration.RetryAfterHours,
-			cfg.ProfileHydration.BatchSize,
-		)
-		go func() {
-			time.Sleep(3 * time.Minute) // Wait a bit after startup
-			hydrator.Start(ctx, cfg.ProfileHydration.IntervalMinutes)
-		}()
-	}
-
-	var trustedSyncer *relay2.TrustedSyncer
-	if !cfg.TrustedSync.Disabled {
-		trustedSyncer = relay2.NewTrustedSyncer(
-			store,
-			trustAnalyzer,
-			cfg.TrustedSync.Kinds,
-			cfg.TrustedSync.BatchSize,
-			cfg.TrustedSync.TimeoutSeconds,
-		)
-		go func() {
-			time.Sleep(6 * time.Minute) // Wait for trust analyzer to run first
-			trustedSyncer.Start(ctx, cfg.TrustedSync.IntervalMinutes)
-		}()
-	}
-
-	// Cross-kind sync: runs once after startup to fill gaps between sync kinds
-	var crossKindSyncer *relay2.CrossKindSyncer
-	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
-		crossKindSyncKinds := cfg.Sync.Kinds
-		if len(crossKindSyncKinds) == 0 {
-			crossKindSyncKinds = cfg.SyncKinds
-		}
-		if len(crossKindSyncKinds) >= 2 {
-			crossKindSyncer = relay2.NewCrossKindSyncer(
-				store,
-				cfg.Sync.Relays,
-				crossKindSyncKinds,
-				500,  // batch size
-				1000, // 1 second delay between batches
-				30,   // 30 second timeout per relay
-			)
-			go func() {
-				time.Sleep(1 * time.Minute) // Wait for initial sync to settle
-				crossKindSyncer.RunOnce(ctx)
-			}()
-		}
-	}
-
 	// Persistent sync subscriber: keeps REQ open on all sync relays for all sync kinds
 	var syncSubscriber *relay2.SyncSubscriber
 	if cfg.Sync.Enabled && len(cfg.Sync.Relays) > 0 {
@@ -421,7 +407,6 @@ func main() {
 	pageHandler := pages.NewHandler(store)
 
 	analyticsHandler := stats.NewAnalyticsHandler(analyticsTracker, trustAnalyzer, store)
-	trustedSyncHandler := stats.NewTrustedSyncHandler(store)
 	dashboardHandler := stats.NewDashboardHandler(store)
 	storageHandler := stats.NewStorageHandler(store)
 	rejectionHandler := stats.NewRejectionHandler(store)
@@ -450,13 +435,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", relay.ServeHTTP)
 	mux.HandleFunc("/rankings", pageHandler.HandleRankings)
-	mux.HandleFunc("/search", pageHandler.HandleSearch)
 	mux.HandleFunc("/profile", pageHandler.HandleProfile)
 	mux.HandleFunc("/timecapsule", timecapsuleHandler.HandleTimecapsule())
 	mux.HandleFunc("/stats", requireStatsAuth(statsTracker.HandleStats()))
 	mux.HandleFunc("/stats/analytics", requireStatsAuth(analyticsHandler.HandleAnalytics()))
 	mux.HandleFunc("/stats/analytics/purge", requireStatsAuth(analyticsHandler.HandlePurge()))
-	mux.HandleFunc("/stats/trusted-sync", requireStatsAuth(trustedSyncHandler.HandleTrustedSyncStats()))
 	mux.HandleFunc("/stats/dashboard", requireStatsAuth(dashboardHandler.HandleDashboard()))
 	mux.HandleFunc("/stats/storage", requireStatsAuth(storageHandler.HandleStorage()))
 	mux.HandleFunc("/stats/rejections", requireStatsAuth(rejectionHandler.HandleRejectionStats()))
@@ -491,15 +474,6 @@ func main() {
 	cancel()
 	analyticsTracker.Stop()
 	syncQueue.Stop()
-	if hydrator != nil {
-		hydrator.Stop()
-	}
-	if trustedSyncer != nil {
-		trustedSyncer.Stop()
-	}
-	if crossKindSyncer != nil {
-		crossKindSyncer.Stop()
-	}
 	if syncSubscriber != nil {
 		syncSubscriber.Stop()
 	}
@@ -517,7 +491,7 @@ func runAnalyticsWorker() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
+	store, err := storage.New(cfg.Storage.Path, *cfg.Storage.ArchiveEnabled)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
@@ -651,7 +625,7 @@ func runSyncCommand(args []string) {
 	}
 
 	// Open storage
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, *cfg.Storage.ArchiveEnabled, cfg.Storage.AnalyticsDBURL)
+	store, err := storage.New(cfg.Storage.Path, *cfg.Storage.ArchiveEnabled)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
@@ -734,276 +708,117 @@ func importEventsFromJSONL(store *storage.Storage, filePath string) error {
 	return nil
 }
 
-func runHydratorTestWithCopy(cfg *config.Config) error {
-	testDBPath := "./data/purplepages_test.db"
-
-	log.Println("Creating fresh test database with sample follower graph...")
-
-	// Remove old test database if it exists
-	os.Remove(testDBPath)
-
-	// Create a fresh test database (archive disabled for test)
-	testStore, err := storage.New(cfg.Storage.Backend, testDBPath, false, "")
-	if err != nil {
-		return fmt.Errorf("failed to create test database: %w", err)
+func toGoEvent(event nostr2.Event) *nostr.Event {
+	return &nostr.Event{
+		ID:        event.ID.Hex(),
+		PubKey:    event.PubKey.Hex(),
+		CreatedAt: nostr.Timestamp(event.CreatedAt),
+		Kind:      int(event.Kind),
+		Tags:      toGoTags(event.Tags),
+		Content:   event.Content,
+		Sig:       nostr2.HexEncodeToString(event.Sig[:]),
 	}
-	defer testStore.Close()
-	defer os.Remove(testDBPath) // Clean up after test
-
-	// Initialize schemas
-	if err := testStore.InitRelayDiscoverySchema(); err != nil {
-		return fmt.Errorf("failed to initialize relay discovery schema: %w", err)
-	}
-	if err := testStore.InitProfileHydrationSchema(); err != nil {
-		return fmt.Errorf("failed to initialize profile hydration schema: %w", err)
-	}
-
-	ctx := context.Background()
-
-	// Set min_followers to 3 for this test
-	originalMinFollowers := cfg.ProfileHydration.MinFollowers
-	cfg.ProfileHydration.MinFollowers = 3
-	defer func() { cfg.ProfileHydration.MinFollowers = originalMinFollowers }()
-
-	// Use REAL pubkey: npub1l2vyh47mk2p0qlsku7hg0vn29faehy9hy34ygaclpn66ukqp3afqutajft
-	target := "fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52"
-
-	// Create some fake followers for the target
-	follower1 := "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"
-	follower2 := "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
-	follower3 := "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333"
-
-	log.Printf("Test scenario:")
-	log.Printf("  Target: %s... (REAL npub - has data on relays!)", target[:16])
-	log.Printf("  Creating 3 kind:3 events where followers follow this real target")
-	log.Printf("  Will actually FETCH missing data from %v", cfg.Sync.Relays)
-	log.Println()
-
-	// Create kind 3 events - each follower follows the target
-	now := nostr.Now()
-	for i, follower := range []string{follower1, follower2, follower3} {
-		evt := &nostr.Event{
-			PubKey:    follower,
-			CreatedAt: now - nostr.Timestamp(i),
-			Kind:      3,
-			Tags: nostr.Tags{
-				nostr.Tag{"p", target},
-			},
-			Content: "",
-		}
-		evt.ID = evt.GetID()
-
-		if err := testStore.SaveEvent(ctx, evt); err != nil {
-			log.Printf("Warning: failed to save test event: %v", err)
-		}
-	}
-
-	log.Println("Test data created")
-	log.Println()
-
-	// Override sync relays to use public relays with real data
-	originalRelays := cfg.Sync.Relays
-	cfg.Sync.Relays = []string{"wss://relay.damus.io", "wss://nos.lol"}
-	defer func() { cfg.Sync.Relays = originalRelays }()
-
-	log.Printf("Using public relays for fetch: %v", cfg.Sync.Relays)
-	log.Println()
-
-	// Run the test and ACTUALLY FETCH from the relay!
-	return runHydratorTest(testStore, cfg, false)
 }
 
-func runHydratorBenchmark(cfg *config.Config) error {
-	log.Println("=== Hydrator Performance Benchmark ===")
-	log.Println()
-
-	// Open production database (read-only operations, archive disabled for benchmark)
-	store, err := storage.New(cfg.Storage.Backend, cfg.Storage.Path, false, cfg.Storage.AnalyticsDBURL)
-	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+func toGoTags(tags nostr2.Tags) nostr.Tags {
+	if len(tags) == 0 {
+		return nil
 	}
-	defer store.Close()
-
-	ctx := context.Background()
-
-	// Get database stats
-	kind0Count, _ := store.CountEventsByKind(ctx, 0)
-	kind3Count, _ := store.CountEventsByKind(ctx, 3)
-	kind10002Count, _ := store.CountEventsByKind(ctx, 10002)
-
-	log.Printf("Database size:")
-	log.Printf("  Kind 0 (profiles): %d", kind0Count)
-	log.Printf("  Kind 3 (contacts): %d", kind3Count)
-	log.Printf("  Kind 10002 (relays): %d", kind10002Count)
-	log.Println()
-
-	// Benchmark follower counting query
-	log.Println("Benchmarking follower counting query...")
-	log.Printf("  Min followers: %d", cfg.ProfileHydration.MinFollowers)
-
-	start := time.Now()
-	followerCounts, err := store.GetFollowerCounts(ctx, cfg.ProfileHydration.MinFollowers)
-	duration := time.Since(start)
-
-	if err != nil {
-		return fmt.Errorf("follower counting failed: %w", err)
+	out := make(nostr.Tags, len(tags))
+	for i, tag := range tags {
+		out[i] = nostr.Tag(tag)
 	}
-
-	log.Printf("  ✓ Completed in %v", duration)
-	log.Printf("  Found %d pubkeys with %d+ followers", len(followerCounts), cfg.ProfileHydration.MinFollowers)
-	log.Println()
-
-	// Benchmark full analysis (what the hydrator does)
-	log.Println("Benchmarking full hydrator analysis...")
-
-	hydrator := relay2.NewProfileHydrator(
-		store,
-		cfg.Sync.Relays,
-		cfg.ProfileHydration.MinFollowers,
-		cfg.ProfileHydration.RetryAfterHours,
-		cfg.ProfileHydration.BatchSize,
-	)
-
-	start = time.Now()
-	pubkeysToFetch := hydrator.FindPubkeysNeedingHydration(ctx)
-	duration = time.Since(start)
-
-	log.Printf("  ✓ Completed in %v", duration)
-	log.Printf("  Found %d pubkeys needing hydration", len(pubkeysToFetch))
-	log.Println()
-
-	log.Println("=== Benchmark Complete ===")
-	return nil
+	return out
 }
 
-func copyFile(src, dst string) error {
-	input, err := os.ReadFile(src)
-	if err != nil {
-		return err
+func toGoFilter(filter nostr2.Filter) nostr.Filter {
+	goFilter := nostr.Filter{
+		Limit:     filter.Limit,
+		Search:    filter.Search,
+		LimitZero: filter.LimitZero,
 	}
-	return os.WriteFile(dst, input, 0644)
+	if len(filter.IDs) > 0 {
+		goFilter.IDs = make([]string, len(filter.IDs))
+		for i, id := range filter.IDs {
+			goFilter.IDs[i] = id.Hex()
+		}
+	}
+	if len(filter.Kinds) > 0 {
+		goFilter.Kinds = make([]int, len(filter.Kinds))
+		for i, kind := range filter.Kinds {
+			goFilter.Kinds[i] = int(kind)
+		}
+	}
+	if len(filter.Authors) > 0 {
+		goFilter.Authors = make([]string, len(filter.Authors))
+		for i, author := range filter.Authors {
+			goFilter.Authors[i] = author.Hex()
+		}
+	}
+	if len(filter.Tags) > 0 {
+		goFilter.Tags = make(nostr.TagMap, len(filter.Tags))
+		for key, values := range filter.Tags {
+			goFilter.Tags[key] = append([]string(nil), values...)
+		}
+	}
+	if filter.Since != 0 {
+		since := nostr.Timestamp(filter.Since)
+		goFilter.Since = &since
+	}
+	if filter.Until != 0 {
+		until := nostr.Timestamp(filter.Until)
+		goFilter.Until = &until
+	}
+	return goFilter
 }
 
-func runHydratorTest(store *storage.Storage, cfg *config.Config, skipFetch bool) error {
-	ctx := context.Background()
-
-	log.Println("=== Profile Hydrator Test ===")
-	log.Println()
-
-	// Show configuration
-	log.Printf("Configuration:")
-	log.Printf("  Min Followers: %d", cfg.ProfileHydration.MinFollowers)
-	log.Printf("  Retry After: %d hours", cfg.ProfileHydration.RetryAfterHours)
-	log.Printf("  Batch Size: %d", cfg.ProfileHydration.BatchSize)
-	log.Printf("  Relays: %v", cfg.Sync.Relays)
-	log.Printf("  Skip Fetch: %t (only show what would be fetched)", skipFetch)
-	log.Println()
-
-	// Show before stats
-	beforeAttempts, err := store.GetProfileFetchAttemptCount(ctx)
+func toNostrEvent(event *nostr.Event) (nostr2.Event, error) {
+	if event == nil {
+		return nostr2.Event{}, fmt.Errorf("nil event")
+	}
+	id, err := nostr2.IDFromHex(event.ID)
 	if err != nil {
-		return fmt.Errorf("failed to count attempts: %w", err)
+		return nostr2.Event{}, fmt.Errorf("invalid event id %q: %w", event.ID, err)
 	}
-
-	totalKind0, _ := store.CountEventsByKind(ctx, 0)
-	totalKind3, _ := store.CountEventsByKind(ctx, 3)
-	totalKind10002, _ := store.CountEventsByKind(ctx, 10002)
-
-	log.Printf("Before hydration:")
-	log.Printf("  Previous fetch attempts: %d", beforeAttempts)
-	log.Printf("  Current events - kind 0: %d, kind 3: %d, kind 10002: %d", totalKind0, totalKind3, totalKind10002)
-	log.Println()
-
-	// Create and run hydrator
-	if len(cfg.Sync.Relays) == 0 {
-		return fmt.Errorf("no sync relays configured")
-	}
-
-	hydrator := relay2.NewProfileHydrator(
-		store,
-		cfg.Sync.Relays,
-		cfg.ProfileHydration.MinFollowers,
-		cfg.ProfileHydration.RetryAfterHours,
-		cfg.ProfileHydration.BatchSize,
-	)
-
-	// First, show what would be fetched
-	log.Println("Analyzing which pubkeys need hydration...")
-	analysisStart := time.Now()
-	pubkeysToFetch := hydrator.FindPubkeysNeedingHydration(ctx)
-	analysisDuration := time.Since(analysisStart)
-	log.Printf("Analysis completed in %v", analysisDuration)
-
-	if len(pubkeysToFetch) == 0 {
-		log.Println("No pubkeys need hydration at this time.")
-		log.Println()
-		log.Println("Reasons why pubkeys might not need hydration:")
-		log.Println("  - All pubkeys with 10+ followers already have all required event kinds")
-		log.Println("  - Recent fetch attempts (within 24 hours) already cover all eligible pubkeys")
-		log.Println()
-		log.Println("Current status is good - the hydrator has done its job!")
-	} else {
-		log.Printf("Found %d pubkeys that need hydration:", len(pubkeysToFetch))
-		limit := 10
-		if len(pubkeysToFetch) < limit {
-			limit = len(pubkeysToFetch)
-		}
-		for i := 0; i < limit; i++ {
-			need := pubkeysToFetch[i]
-			log.Printf("  %s - need k0:%t k3:%t k10002:%t",
-				need.Pubkey[:16], need.NeedKind0, need.NeedKind3, need.NeedKind10002)
-		}
-		if len(pubkeysToFetch) > limit {
-			log.Printf("  ...and %d more", len(pubkeysToFetch)-limit)
-		}
-		log.Println()
-
-		if !skipFetch {
-			log.Println("Running profile hydrator to fetch missing data...")
-			log.Println()
-			hydrator.RunOnce(ctx)
-			log.Println()
-		} else {
-			log.Println("Skipping actual fetch (dry-run mode)")
-			log.Println()
-		}
-	}
-
-	// Show after stats
-	afterAttempts, err := store.GetProfileFetchAttemptCount(ctx)
+	pubkey, err := nostr2.PubKeyFromHex(event.PubKey)
 	if err != nil {
-		return fmt.Errorf("failed to count attempts: %w", err)
+		return nostr2.Event{}, fmt.Errorf("invalid pubkey %q: %w", event.PubKey, err)
+	}
+	var sig [64]byte
+	if event.Sig != "" {
+		sigBytes, err := nostr2.HexDecodeString(event.Sig)
+		if err != nil {
+			return nostr2.Event{}, fmt.Errorf("invalid signature: %w", err)
+		}
+		if len(sigBytes) != len(sig) {
+			return nostr2.Event{}, fmt.Errorf("invalid signature length: %d", len(sigBytes))
+		}
+		copy(sig[:], sigBytes)
 	}
 
-	newKind0, _ := store.CountEventsByKind(ctx, 0)
-	newKind3, _ := store.CountEventsByKind(ctx, 3)
-	newKind10002, _ := store.CountEventsByKind(ctx, 10002)
+	return nostr2.Event{
+		ID:        id,
+		PubKey:    pubkey,
+		CreatedAt: nostr2.Timestamp(event.CreatedAt),
+		Kind:      nostr2.Kind(event.Kind),
+		Tags:      toNostrTags(event.Tags),
+		Content:   event.Content,
+		Sig:       sig,
+	}, nil
+}
 
-	if !skipFetch && len(pubkeysToFetch) > 0 {
-		log.Printf("After hydration:")
-		log.Printf("  Total fetch attempts: %d (new: %d)", afterAttempts, afterAttempts-beforeAttempts)
-		log.Printf("  Current events - kind 0: %d (+%d), kind 3: %d (+%d), kind 10002: %d (+%d)",
-			newKind0, newKind0-totalKind0,
-			newKind3, newKind3-totalKind3,
-			newKind10002, newKind10002-totalKind10002)
-		log.Println()
+func toNostrTags(tags nostr.Tags) nostr2.Tags {
+	if len(tags) == 0 {
+		return nil
 	}
-
-	// Show some example attempts
-	log.Println("Recent fetch attempts:")
-	attempts, err := store.GetRecentProfileFetchAttempts(ctx, 10)
-	if err != nil {
-		return fmt.Errorf("failed to query attempts: %w", err)
+	out := make(nostr2.Tags, len(tags))
+	for i, tag := range tags {
+		out[i] = nostr2.Tag(tag)
 	}
+	return out
+}
 
-	for _, attempt := range attempts {
-		timestamp := time.Unix(attempt.LastAttempt, 0).Format("2006-01-02 15:04:05")
-		log.Printf("  %s... @ %s - k0:%t k3:%t k10002:%t",
-			attempt.Pubkey[:16], timestamp, attempt.FetchedKind0, attempt.FetchedKind3, attempt.FetchedKind10002)
-	}
-
-	log.Println()
-	log.Println("=== Test Complete ===")
-
-	return nil
+func isOlderEvent(previous, next *nostr.Event) bool {
+	return previous.CreatedAt < next.CreatedAt ||
+		(previous.CreatedAt == next.CreatedAt && previous.ID > next.ID)
 }

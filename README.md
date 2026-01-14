@@ -9,14 +9,9 @@ A specialized Nostr relay built with [khatru](https://khatru.nostr.technology/) 
   - Kind 3: Contact lists/follows
   - All NIP-51 relay list kinds (kinds 10000-10102, 30000-30030, 30063, 30267, 31924, 39089, 39092)
 
-- **Automatic Relay Discovery**: Extracts relay URLs from kind:10002 events and automatically discovers new relays
+- **Automatic Relay Discovery**: Extracts relay URLs from kind:10002 events
 
-- **Intelligent Relay Syncing**: Continuously syncs with discovered relays every 30 seconds, tracking:
-  - Success rates for each relay
-  - Events contributed by each relay
-  - Connection statistics
-
-- **Profile Hydration**: Automatically fetches missing profiles for popular users (configurable follower threshold)
+- **Relay Syncing**: Continuously syncs with discovered relays on a rotating queue
 
 - **REQ Analytics & Spam Detection**:
   - Tracks pubkey request popularity and co-occurrence patterns
@@ -24,14 +19,13 @@ A specialized Nostr relay built with [khatru](https://khatru.nostr.technology/) 
   - Trust propagation from largest connected component
   - Manual spam purging with confirmation
 
-- **PostgreSQL Storage**: Scalable, reliable database storage with advanced query capabilities
+- **LMDB + SQLite Storage**: LMDB for events, local SQLite for analytics and history
 
 - **Statistics Dashboard**:
   - `/stats` - Relay statistics, event counts, discovered relays
   - `/stats/analytics` - REQ analytics, bot clusters, spam candidates
   - `/relays` - Detailed relay health and contribution stats
   - `/rankings` - Top profiles by follower count
-  - `/search` - Search for profiles
   - `/profile` - View individual profiles
 
 - **NIP-11 Relay Information**: Fully configurable relay metadata
@@ -63,8 +57,7 @@ The relay is configured via `config.json`:
     "port": 3335
   },
   "storage": {
-    "backend": "lmdb",
-    "path": "./data/purplepages.db"
+    "path": "./data/events.lmdb"
   },
   "allowed_kinds": [0, 3, 10000, 10001, ...],
   "sync": {
@@ -74,13 +67,6 @@ The relay is configured via `config.json`:
       "wss://nos.lol",
       "wss://relay.nostr.band"
     ]
-  },
-  "profile_hydration": {
-    "enabled": true,
-    "min_followers": 10,
-    "interval_minutes": 5,
-    "retry_after_hours": 24,
-    "batch_size": 100
   }
 }
 ```
@@ -90,13 +76,11 @@ The relay is configured via `config.json`:
 - `relay.*`: NIP-11 relay information metadata
 - `server.host`: Interface to bind to (default: 0.0.0.0)
 - `server.port`: Port to listen on (default: 3335)
-- `storage.backend`: Storage backend ("lmdb" or "postgresql")
-- `storage.path`: Path to storage file/directory
+- `storage.path`: Path to LMDB event storage directory
+- Analytics DB: A local `analytics.sqlite` file is created alongside the storage path directory
 - `allowed_kinds`: Array of event kinds to accept
 - `sync.enabled`: Enable/disable automatic sync on startup
 - `sync.relays`: Array of relay URLs to sync from initially
-- `profile_hydration.enabled`: Enable automatic profile fetching
-- `profile_hydration.min_followers`: Minimum followers before hydrating a profile
 
 ## Usage
 
@@ -108,7 +92,6 @@ The relay is configured via `config.json`:
 
 - `--port <port>`: Override port from config
 - `--import <file.jsonl>`: Import events from JSONL file and exit
-- `--test-hydrator`: Run profile hydrator test and exit
 
 ## Architecture
 
@@ -118,24 +101,24 @@ The relay is configured via `config.json`:
 │   └── config.go           # Configuration loading and validation
 ├── storage/
 │   ├── storage.go          # Storage backend abstraction
-│   ├── relay_discovery.go  # Relay discovery & profile hydration tables
+│   ├── relay_discovery.go  # Relay discovery + relay stats scanning
 │   └── analytics.go        # REQ analytics & spam detection tables
 ├── analytics/
 │   ├── tracker.go          # REQ event tracking with periodic flush
 │   ├── cluster.go          # Bot cluster detection (Tarjan's SCC)
 │   └── trust.go            # Trust propagation & spam identification
 ├── relay/
-│   ├── discovery.go        # Relay URL extraction from kind:10002
 │   ├── queue.go            # Relay sync queue
-│   ├── hydrator.go         # Profile hydration system
-│   └── normalize.go        # Relay URL normalization
+│   └── sync_subscriber.go  # Persistent sync subscriber
+├── internal/
+│   └── relayutil/          # Relay URL normalization helpers
 ├── stats/
 │   ├── stats.go            # In-memory statistics tracking
 │   ├── handler.go          # /stats endpoint
 │   ├── relays_handler.go   # /relays endpoint
 │   └── analytics_handler.go # /stats/analytics endpoint
 ├── pages/
-│   └── pages.go            # /rankings, /search, /profile endpoints
+│   └── pages.go            # /rankings, /profile endpoints
 └── sync/
     └── sync.go             # Initial sync from configured relays
 ```
@@ -153,10 +136,11 @@ View and purge spam at `/stats/analytics`.
 
 ## Dependencies
 
-- [khatru](https://github.com/fiatjaf/khatru) - Nostr relay framework
+- [khatru](https://fiatjaf.com/nostr/khatru) - Nostr relay framework
 - [go-nostr](https://github.com/nbd-wtf/go-nostr) - Nostr protocol implementation
 - [eventstore](https://github.com/fiatjaf/eventstore) - Event storage abstraction
 - [sqlx](https://github.com/jmoiron/sqlx) - SQL extensions for Go
+- [go-sqlite3](https://github.com/mattn/go-sqlite3) - SQLite driver for analytics storage
 
 ## License
 

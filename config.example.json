@@ -14,28 +14,13 @@
     "port": 3335
   },
   "storage": {
-    "backend": "lmdb",
-    "path": "./data/events.lmdb",
-    "analytics_db_url": "./data/analytics.db"
+    "path": "./data/events.lmdb"
   },
   "allowed_kinds": [0, 3, "10000-19999", "30000-39999"],
   "sync": {
     "enabled": true,
     "relays": ["wss://relay.damus.io"],
     "kinds": [3]
-  },
-  "trusted_sync": {
-    "interval_minutes": 30,
-    "batch_size": 50,
-    "kinds": [0, 3, 10002],
-    "timeout_seconds": 30
-  },
-  "profile_hydration": {
-    "enabled": true,
-    "min_followers": 10,
-    "retry_after_hours": 24,
-    "interval_minutes": 5,
-    "batch_size": 50
   },
   "limits": {
     "max_subscriptions": 50,

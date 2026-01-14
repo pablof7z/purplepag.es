@@ -1,4 +1,4 @@
-# LMDB + PostgreSQL Separation Design
+# LMDB + SQLite Analytics Separation Design
 
 **Date:** 2025-01-23
 **Status:** Implemented
@@ -18,7 +18,7 @@ Production relay not keeping up due to PostgreSQL eventstore backend limitations
 - Performance is critical
 - Already built event_tags workaround showing library limitations
 
-## Solution: LMDB for Events, PostgreSQL for Analytics Only
+## Solution: LMDB for Events, SQLite for Analytics Only
 
 ### Architecture
 
@@ -28,7 +28,7 @@ Production relay not keeping up due to PostgreSQL eventstore backend limitations
 - Uses existing fiatjaf/eventstore/lmdb backend
 - No changes to relay query logic
 
-**PostgreSQL (separate connection):**
+**SQLite (separate connection):**
 - Analytics tables ONLY: daily_stats, req_analytics, bot_clusters, trust_graph
 - Heavy graph algorithms run in separate analytics worker process
 - No event storage
@@ -47,7 +47,7 @@ Production relay not keeping up due to PostgreSQL eventstore backend limitations
 type Storage struct {
     db             eventstore.Store  // LMDB for events
     archiveEnabled bool
-    analyticsDB    *sqlx.DB          // Separate PostgreSQL
+    analyticsDB    *sqlx.DB          // Separate SQLite
 }
 ```
 
@@ -55,9 +55,7 @@ type Storage struct {
 ```json
 {
   "storage": {
-    "backend": "lmdb",
-    "path": "./data/events.lmdb",
-    "analytics_db_url": "postgresql://..."
+    "path": "./data/events.lmdb"
   }
 }
 ```
@@ -68,9 +66,9 @@ type Storage struct {
 
 ### Migration Path
 
-1. Create separate analytics database
+1. Create separate analytics database file (SQLite)
 2. Export events from PostgreSQL eventstore
-3. Update config to use LMDB + analytics_db_url
+3. Update config to use LMDB path only
 4. Import events to LMDB
 5. Run relay and analytics worker separately
 
@@ -95,9 +93,9 @@ type Storage struct {
 - Library-based (fiatjaf/eventstore)
 
 **Cons:**
-- Two databases to manage (but clean separation)
 - Migration required for production
 - LMDB file pre-allocates space (16GB)
+- SQLite analytics not suited for heavy concurrent writes
 
 ## Rejected Alternatives
 
