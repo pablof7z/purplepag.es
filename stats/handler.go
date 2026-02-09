@@ -259,12 +259,17 @@ func (s *Stats) HandleStats() http.HandlerFunc {
 		uptime := s.GetUptime()
 		uptimeStr := formatDuration(uptime)
 
+		// Get total count directly (fast)
+		totalEvents, err := s.storage.GetTotalEventCount(ctx)
+		if err != nil {
+			totalEvents = 0
+		}
+
+		// Get by-kind stats from cache (returns empty if not populated)
 		storageStats := s.GetStorageStats(ctx)
 
-		var totalEvents int64
 		kindStats := make([]KindStat, 0)
 		for kind, count := range storageStats {
-			totalEvents += count
 			if count > 0 {
 				name := kindNames[kind]
 				if name == "" {
