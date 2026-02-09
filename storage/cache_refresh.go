@@ -624,10 +624,13 @@ func (s *Storage) refreshEventCountsCache(ctx context.Context) error {
 		return nil
 	}
 
-	// Get event counts by kind from LMDB
-	kindCounts, err := s.GetEventCountsByKind(ctx)
-	if err != nil {
-		return fmt.Errorf("get event counts by kind: %w", err)
+	// Scan LMDB directly to count events by kind (this is slow but only runs hourly)
+	kindCounts := make(map[int]int64)
+	if err := s.ScanEvents(ctx, nostr.Filter{}, 0, func(evt *nostr.Event) error {
+		kindCounts[evt.Kind]++
+		return nil
+	}); err != nil {
+		return fmt.Errorf("scan events for counts: %w", err)
 	}
 
 	now := time.Now().Unix()
