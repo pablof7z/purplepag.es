@@ -45,12 +45,16 @@ func newLMDBStorage(path string, archiveEnabled bool, extraFlags uint) (*Storage
 	if err := os.MkdirAll(filepath.Dir(analyticsPath), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create analytics directory: %w", err)
 	}
-	analyticsDB, err := sqlx.Open("sqlite3", analyticsPath)
+	// Add connection parameters to prevent indefinite blocking on locks
+	// _timeout: milliseconds to wait for locks before returning SQLITE_BUSY
+	// _journal_mode=WAL: allows concurrent reads during writes
+	// _synchronous=NORMAL: balance between safety and performance
+	analyticsDB, err := sqlx.Open("sqlite3", analyticsPath+"?_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open analytics database: %w", err)
 	}
 	storage.analyticsDB = analyticsDB
-	log.Printf("Connected to analytics database (SQLite): %s", analyticsPath)
+	log.Printf("Connected to analytics database (SQLite): %s (timeout=5s, WAL mode)", analyticsPath)
 
 	if archiveEnabled {
 		log.Println("Event archiving enabled for kind:3 history")
