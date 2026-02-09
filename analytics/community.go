@@ -5,7 +5,6 @@ import (
 	"log"
 	"sort"
 
-	"github.com/nbd-wtf/go-nostr"
 	"github.com/pablof7z/purplepag.es/storage"
 )
 
@@ -18,19 +17,19 @@ type CommunityDetector struct {
 func NewCommunityDetector(store *storage.Storage) *CommunityDetector {
 	return &CommunityDetector{
 		storage:        store,
-		minCommunity:   10,  // Minimum members to be a community
-		maxCommunities: 50,  // Max communities to track
+		minCommunity:   10, // Minimum members to be a community
+		maxCommunities: 50, // Max communities to track
 	}
 }
 
 type Community struct {
-	ID              int
-	Members         []string
-	Size            int
-	TopMembers      []CommunityMember // Top members by follower count
-	InternalEdges   int
-	ExternalEdges   int
-	Modularity      float64
+	ID            int
+	Members       []string
+	Size          int
+	TopMembers    []CommunityMember // Top members by follower count
+	InternalEdges int
+	ExternalEdges int
+	Modularity    float64
 }
 
 type CommunityMember struct {
@@ -81,33 +80,45 @@ func (d *CommunityDetector) DetectCommunities(ctx context.Context) (*CommunityGr
 	return result, nil
 }
 
+func (d *CommunityDetector) DetectCommunitiesWithGraph(ctx context.Context, followGraph FollowGraph) (*CommunityGraph, error) {
+	log.Println("community: starting community detection")
+
+	graph := d.buildGraphFromFollowGraph(followGraph)
+	if len(graph.nodes) < 100 {
+		log.Printf("community: graph too small (%d nodes), skipping", len(graph.nodes))
+		return nil, nil
+	}
+
+	log.Printf("community: built graph with %d nodes and %d edges", len(graph.nodes), graph.edgeCount)
+
+	communities := d.louvain(graph)
+	log.Printf("community: found %d communities", len(communities))
+
+	result := d.buildCommunityGraph(ctx, graph, communities)
+
+	if err := d.storage.SaveCommunities(ctx, result); err != nil {
+		log.Printf("community: failed to save communities: %v", err)
+	}
+
+	return result, nil
+}
+
 // Internal graph representation for Louvain
 type louvainGraph struct {
-	nodes     []string                    // node index -> pubkey
-	nodeIndex map[string]int              // pubkey -> node index
-	adj       []map[int]int               // adjacency list with weights
-	degree    []int                       // degree of each node
+	nodes     []string       // node index -> pubkey
+	nodeIndex map[string]int // pubkey -> node index
+	adj       []map[int]int  // adjacency list with weights
+	degree    []int          // degree of each node
 	edgeCount int
 }
 
 func (d *CommunityDetector) buildGraph(ctx context.Context) *louvainGraph {
-	// Get the follow graph from cluster detector
 	followGraph := make(FollowGraph)
 
-	contactLists, err := d.storage.QueryEvents(ctx, nostr.Filter{
-		Kinds: []int{3},
-	})
+	latest, err := d.storage.LatestEventsByPubkey(ctx, 3)
 	if err != nil {
-		log.Printf("community: failed to query contact lists: %v", err)
+		log.Printf("community: failed to scan contact lists: %v", err)
 		return &louvainGraph{nodeIndex: make(map[string]int)}
-	}
-
-	// Keep only latest contact list per pubkey
-	latest := make(map[string]*nostr.Event)
-	for _, evt := range contactLists {
-		if existing, ok := latest[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
-			latest[evt.PubKey] = evt
-		}
 	}
 
 	// Build follow graph
@@ -122,6 +133,10 @@ func (d *CommunityDetector) buildGraph(ctx context.Context) *louvainGraph {
 		}
 	}
 
+	return d.buildGraphFromFollowGraph(followGraph)
+}
+
+func (d *CommunityDetector) buildGraphFromFollowGraph(followGraph FollowGraph) *louvainGraph {
 	// Convert to Louvain format - treat as undirected for community detection
 	nodeSet := make(map[string]bool)
 	for from := range followGraph {

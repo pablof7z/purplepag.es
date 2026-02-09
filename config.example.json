@@ -5,7 +5,7 @@
     "pubkey": "",
     "contact": "",
     "icon": "",
-    "supported_nips": [1, 11, 42, 51],
+    "supported_nips": [1, 11, 42, 45, 51],
     "software": "https://github.com/purplepages/relay",
     "version": "0.1.0"
   },

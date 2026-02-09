@@ -43,13 +43,17 @@ func NewTrustAnalyzer(store *storage.Storage, clusterDetector *ClusterDetector, 
 }
 
 func (t *TrustAnalyzer) AnalyzeTrust(ctx context.Context) error {
+	graph := t.clusterDetector.GetFollowGraph(ctx)
+	return t.AnalyzeTrustWithGraph(ctx, graph)
+}
+
+func (t *TrustAnalyzer) AnalyzeTrustWithGraph(ctx context.Context, graph FollowGraph) error {
 	log.Println("analytics: starting trust analysis")
 
 	if err := t.storage.ClearSpamCandidates(ctx); err != nil {
 		log.Printf("analytics: failed to clear spam candidates: %v", err)
 	}
 
-	graph := t.clusterDetector.GetFollowGraph(ctx)
 	if len(graph) == 0 {
 		log.Println("analytics: no follow graph data available")
 		return nil

@@ -365,7 +365,7 @@ func (s *Storage) SaveBotCluster(ctx context.Context, members []string, internal
 	err = tx.QueryRowContext(ctx, s.rebind(`
 		INSERT INTO bot_clusters (detected_at, cluster_size, internal_density, external_ratio, is_active)
 		VALUES (?, ?, ?, ?, 1)
-		RETURNING id
+		RETURNING cluster_id
 	`), now, len(members), internalDensity, externalRatio).Scan(&clusterID)
 	if err != nil {
 		return 0, err

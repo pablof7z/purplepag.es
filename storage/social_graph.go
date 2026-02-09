@@ -2,26 +2,45 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
+	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 )
 
 func (s *Storage) latestEventsByPubkey(ctx context.Context, kind int) (map[string]*nostr.Event, error) {
-	events, err := s.QueryEvents(ctx, nostr.Filter{Kinds: []int{kind}})
-	if err != nil {
+	latest := make(map[string]*nostr.Event)
+	if err := s.ScanEvents(ctx, nostr.Filter{Kinds: []int{kind}}, 0, func(evt *nostr.Event) error {
+		if existing, ok := latest[evt.PubKey]; !ok || isNewerEvent(existing, evt) {
+			latest[evt.PubKey] = evt
+		}
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 
-	latest := make(map[string]*nostr.Event)
-	for _, evt := range events {
-		if existing, ok := latest[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
-			latest[evt.PubKey] = evt
-		}
-	}
-
 	return latest, nil
+}
+
+func isNewerEvent(previous, next *nostr.Event) bool {
+	if previous == nil {
+		return true
+	}
+	if next == nil {
+		return false
+	}
+	if previous.CreatedAt < next.CreatedAt {
+		return true
+	}
+	if previous.CreatedAt == next.CreatedAt && previous.ID > next.ID {
+		return true
+	}
+	return false
+}
+
+// LatestEventsByPubkey returns the latest event for each pubkey for the given kind.
+func (s *Storage) LatestEventsByPubkey(ctx context.Context, kind int) (map[string]*nostr.Event, error) {
+	return s.latestEventsByPubkey(ctx, kind)
 }
 
 func tagsAsStrings(tags nostr.Tags) [][]string {
@@ -36,8 +55,8 @@ func tagsAsStrings(tags nostr.Tags) [][]string {
 }
 
 type MutedPubkey struct {
-	Pubkey       string
-	MuteCount    int64
+	Pubkey        string
+	MuteCount     int64
 	FollowerCount int64
 }
 
@@ -57,14 +76,18 @@ type FollowerCount struct {
 }
 
 type FollowerTrend struct {
-	Pubkey      string
-	NetChange   int64
-	Gained      int64
-	Lost        int64
+	Pubkey    string
+	NetChange int64
+	Gained    int64
+	Lost      int64
 }
 
 // GetMostMutedPubkeys returns pubkeys that appear most frequently in kind 10000 mute lists
 func (s *Storage) GetMostMutedPubkeys(ctx context.Context, limit int) ([]MutedPubkey, error) {
+	if cached, err := s.GetCachedMostMuted(ctx, limit); err == nil {
+		return cached, nil
+	}
+
 	latest, err := s.latestEventsByPubkey(ctx, 10000)
 	if err != nil {
 		return nil, err
@@ -126,6 +149,10 @@ func (s *Storage) getFollowerCountsForPubkeys(ctx context.Context, pubkeys map[s
 
 // GetInterestRankings returns the most common interests from kind 10015 events
 func (s *Storage) GetInterestRankings(ctx context.Context, limit int) ([]InterestRank, error) {
+	if cached, err := s.GetCachedTopInterests(ctx, limit); err == nil {
+		return cached, nil
+	}
+
 	latest, err := s.latestEventsByPubkey(ctx, 10015)
 	if err != nil {
 		return nil, err
@@ -196,6 +223,10 @@ func (s *Storage) GetCommunityRankings(ctx context.Context, limit int) ([]Commun
 
 // GetTopFollowed returns pubkeys with the most followers from kind 3 events
 func (s *Storage) GetTopFollowed(ctx context.Context, limit int) ([]FollowerCount, error) {
+	if cached, _, err := s.GetCachedFollowerCountsPage(ctx, limit, 0); err == nil {
+		return cached, nil
+	}
+
 	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, err
@@ -231,157 +262,66 @@ func (s *Storage) GetTopFollowed(ctx context.Context, limit int) ([]FollowerCoun
 
 // GetFollowerTrends calculates who gained/lost the most followers based on event_history
 func (s *Storage) GetFollowerTrends(ctx context.Context, limit int) (rising []FollowerTrend, falling []FollowerTrend, err error) {
+	if cachedRising, cachedFalling, cachedErr := s.GetCachedFollowerTrends(ctx, limit); cachedErr == nil {
+		return cachedRising, cachedFalling, nil
+	}
+	return s.getFollowerTrendsFromChangeLog(ctx, limit)
+}
+
+func (s *Storage) getFollowerTrendsFromChangeLog(ctx context.Context, limit int) (rising []FollowerTrend, falling []FollowerTrend, err error) {
 	dbConn := s.getDBConn()
 	if dbConn == nil {
 		return nil, nil, nil
 	}
 
-	// Get historical kind 3 events
-	rows, err := dbConn.QueryContext(ctx, `
-		SELECT pubkey, tags
-		FROM event_history
-		WHERE kind = 3
-	`)
+	dayStart := time.Now().UTC().Truncate(24 * time.Hour)
+	windowStart := dayStart.Add(-time.Duration(trendWindowDays-1) * 24 * time.Hour).Unix()
+
+	rows, err := dbConn.QueryContext(ctx, s.rebind(`
+		SELECT pubkey, SUM(gained) AS gained, SUM(lost) AS lost
+		FROM follower_trend_changes
+		WHERE day >= ?
+		GROUP BY pubkey
+	`), windowStart)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 
-	// Track old follows per pubkey (aggregated)
-	oldFollows := make(map[string]map[string]bool)
+	trends := make([]FollowerTrend, 0)
 	for rows.Next() {
-		var pubkey, tagsJSON string
-		if err := rows.Scan(&pubkey, &tagsJSON); err != nil {
-			continue
+		var trend FollowerTrend
+		if err := rows.Scan(&trend.Pubkey, &trend.Gained, &trend.Lost); err != nil {
+			return nil, nil, err
 		}
-		var tags [][]string
-		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
-			continue
-		}
-
-		if oldFollows[pubkey] == nil {
-			oldFollows[pubkey] = make(map[string]bool)
-		}
-		for _, tag := range tags {
-			if len(tag) >= 2 && tag[0] == "p" {
-				oldFollows[pubkey][tag[1]] = true
-			}
-		}
+		trend.NetChange = trend.Gained - trend.Lost
+		trends = append(trends, trend)
 	}
-
-	currentFollows := make(map[string]map[string]bool)
-	latest, err := s.latestEventsByPubkey(ctx, 3)
-	if err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	for pubkey, evt := range latest {
-		currentFollows[pubkey] = make(map[string]bool)
-		for _, tag := range tagsAsStrings(evt.Tags) {
-			if len(tag) >= 2 && tag[0] == "p" {
-				currentFollows[pubkey][tag[1]] = true
-			}
-		}
-	}
 
-	// Calculate changes per followed pubkey
-	changes := make(map[string]*FollowerTrend)
-
-	// Process users who have history
-	for pubkey, oldSet := range oldFollows {
-		currentSet := currentFollows[pubkey]
-		if currentSet == nil {
-			currentSet = make(map[string]bool)
-		}
-
-		// Find gained (in current but not in old)
-		for followed := range currentSet {
-			if !oldSet[followed] {
-				if changes[followed] == nil {
-					changes[followed] = &FollowerTrend{Pubkey: followed}
-				}
-				changes[followed].Gained++
-			}
-		}
-
-		// Find lost (in old but not in current)
-		for followed := range oldSet {
-			if !currentSet[followed] {
-				if changes[followed] == nil {
-					changes[followed] = &FollowerTrend{Pubkey: followed}
-				}
-				changes[followed].Lost++
-			}
-		}
-	}
-
-	// Calculate net change
-	for _, trend := range changes {
-		trend.NetChange = int64(trend.Gained) - int64(trend.Lost)
-	}
-
-	// Convert to slices
-	allTrends := make([]FollowerTrend, 0, len(changes))
-	for _, trend := range changes {
-		allTrends = append(allTrends, *trend)
-	}
-
-	// Sort for rising (highest net gain)
-	sort.Slice(allTrends, func(i, j int) bool {
-		return allTrends[i].NetChange > allTrends[j].NetChange
-	})
-
-	rising = make([]FollowerTrend, 0, limit)
-	for i := 0; i < len(allTrends) && i < limit; i++ {
-		if allTrends[i].NetChange > 0 {
-			rising = append(rising, allTrends[i])
-		}
-	}
-
-	// Sort for falling (lowest net gain / highest loss)
-	sort.Slice(allTrends, func(i, j int) bool {
-		return allTrends[i].NetChange < allTrends[j].NetChange
-	})
-
-	falling = make([]FollowerTrend, 0, limit)
-	for i := 0; i < len(allTrends) && i < limit; i++ {
-		if allTrends[i].NetChange < 0 {
-			falling = append(falling, allTrends[i])
-		}
-	}
-
+	rising, falling = rankFollowerTrends(trends, limit)
 	return rising, falling, nil
 }
 
 // GetFollowerCount returns the number of followers for a specific pubkey
 func (s *Storage) GetFollowerCount(ctx context.Context, pubkey string) (int64, error) {
-	latest, err := s.latestEventsByPubkey(ctx, 3)
+	count, ok, err := s.GetCachedFollowerCount(ctx, pubkey)
 	if err != nil {
 		return 0, err
 	}
-
-	var count int64
-	for _, evt := range latest {
-		if evt.Tags.ContainsAny("p", []string{pubkey}) {
-			count++
-		}
+	if ok {
+		return count, nil
 	}
-
-	return count, nil
+	return 0, nil
 }
 
 // GetSocialGraphStats returns summary statistics
 func (s *Storage) GetSocialGraphStats(ctx context.Context) (muteListCount, interestListCount, communityListCount, contactListCount int64, err error) {
-	if muteListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10000}}); err != nil {
-		return 0, 0, 0, 0, err
+	if cached, cacheErr := s.GetCachedSocialCounts(ctx); cacheErr == nil {
+		return cached.MuteListCount, cached.InterestListCount, cached.CommunityListCount, cached.ContactListCount, nil
 	}
-	if interestListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10015}}); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if communityListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{10004}}); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	if contactListCount, err = s.CountEvents(ctx, nostr.Filter{Kinds: []int{3}}); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	return muteListCount, interestListCount, communityListCount, contactListCount, nil
+
+	return 0, 0, 0, 0, nil
 }

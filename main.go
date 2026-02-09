@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	nostrEventstore "fiatjaf.com/nostr/eventstore"
 	"fiatjaf.com/nostr/khatru"
 	"fiatjaf.com/nostr/nip11"
+	"fiatjaf.com/nostr/nip45/hyperloglog"
 	"github.com/fiatjaf/eventstore"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip77"
@@ -59,11 +61,24 @@ func main() {
 
 	testMode := cfg.Server.Port == 9999
 
-	store, err := storage.New(cfg.Storage.Path, *cfg.Storage.ArchiveEnabled)
+	var store *storage.Storage
+	if *importFile != "" {
+		store, err = storage.NewForImport(cfg.Storage.Path)
+	} else {
+		store, err = storage.New(cfg.Storage.Path, *cfg.Storage.ArchiveEnabled)
+	}
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
+
+	if *importFile != "" {
+		if err := importEventsFromJSONL(store, *importFile); err != nil {
+			log.Fatalf("Failed to import events: %v", err)
+		}
+		log.Println("Import completed successfully")
+		os.Exit(0)
+	}
 
 	if err := store.InitAnalyticsSchema(); err != nil {
 		log.Fatalf("Failed to initialize analytics schema: %v", err)
@@ -80,13 +95,8 @@ func main() {
 	if err := store.InitStorageStatsSchema(); err != nil {
 		log.Fatalf("Failed to initialize storage stats schema: %v", err)
 	}
-
-	if *importFile != "" {
-		if err := importEventsFromJSONL(store, *importFile); err != nil {
-			log.Fatalf("Failed to import events: %v", err)
-		}
-		log.Println("Import completed successfully")
-		os.Exit(0)
+	if err := store.InitCacheSchema(); err != nil {
+		log.Fatalf("Failed to initialize cache schema: %v", err)
 	}
 
 	statsTracker := stats.New(store)
@@ -316,6 +326,10 @@ func main() {
 		return uint32(count), nil
 	}
 
+	relay.CountHLL = func(ctx context.Context, filter nostr2.Filter, offset int) (uint32, *hyperloglog.HyperLogLog, error) {
+		return store.CountEventsHLL(ctx, toGoFilter(filter), offset)
+	}
+
 	relay.OnConnect = func(ctx context.Context) {
 		statsTracker.RecordConnection()
 	}
@@ -500,6 +514,12 @@ func runAnalyticsWorker() {
 	if err := store.InitAnalyticsSchema(); err != nil {
 		log.Fatalf("Failed to initialize analytics schema: %v", err)
 	}
+	if err := store.InitCacheSchema(); err != nil {
+		log.Fatalf("Failed to initialize cache schema: %v", err)
+	}
+	if err := store.InitStorageStatsSchema(); err != nil {
+		log.Fatalf("Failed to initialize storage stats schema: %v", err)
+	}
 
 	clusterDetector := analytics.NewClusterDetector(store)
 	trustAnalyzer := analytics.NewTrustAnalyzer(store, clusterDetector, cfg.Limits.MinTrustedFollowers)
@@ -524,14 +544,26 @@ func runAnalyticsWorker() {
 	if trustAnalyzer.GetTrustedCount() == 0 {
 		log.Println("No trusted pubkeys found, running trust analysis immediately")
 		start := time.Now()
-		clusterDetector.Detect(ctx)
+		followGraph := clusterDetector.BuildFollowGraph(ctx)
+		log.Printf("follow graph build took %v", time.Since(start))
+		start = time.Now()
+		clusterDetector.DetectWithGraph(ctx, followGraph)
 		log.Printf("clusterDetector.Detect took %v", time.Since(start))
 		start = time.Now()
-		trustAnalyzer.AnalyzeTrust(ctx)
+		trustAnalyzer.AnalyzeTrustWithGraph(ctx, followGraph)
 		log.Printf("trustAnalyzer.AnalyzeTrust took %v", time.Since(start))
 		start = time.Now()
-		communityDetector.DetectCommunities(ctx)
+		communityDetector.DetectCommunitiesWithGraph(ctx, followGraph)
 		log.Printf("communityDetector.DetectCommunities took %v", time.Since(start))
+		start = time.Now()
+		if err := store.RefreshDerivedStats(ctx); err != nil {
+			log.Printf("cache refresh failed: %v", err)
+		} else {
+			log.Printf("cache refresh took %v", time.Since(start))
+		}
+		if err := store.RecordDailyStorageSnapshot(ctx); err != nil {
+			log.Printf("storage snapshot failed: %v", err)
+		}
 	} else {
 		time.Sleep(5 * time.Minute)
 	}
@@ -539,14 +571,26 @@ func runAnalyticsWorker() {
 	log.Println("Analytics worker: starting hourly analysis loop")
 	for {
 		start := time.Now()
-		clusterDetector.Detect(ctx)
+		followGraph := clusterDetector.BuildFollowGraph(ctx)
+		log.Printf("follow graph build took %v", time.Since(start))
+		start = time.Now()
+		clusterDetector.DetectWithGraph(ctx, followGraph)
 		log.Printf("clusterDetector.Detect took %v", time.Since(start))
 		start = time.Now()
-		trustAnalyzer.AnalyzeTrust(ctx)
+		trustAnalyzer.AnalyzeTrustWithGraph(ctx, followGraph)
 		log.Printf("trustAnalyzer.AnalyzeTrust took %v", time.Since(start))
 		start = time.Now()
-		communityDetector.DetectCommunities(ctx)
+		communityDetector.DetectCommunitiesWithGraph(ctx, followGraph)
 		log.Printf("communityDetector.DetectCommunities took %v", time.Since(start))
+		start = time.Now()
+		if err := store.RefreshDerivedStats(ctx); err != nil {
+			log.Printf("cache refresh failed: %v", err)
+		} else {
+			log.Printf("cache refresh took %v", time.Since(start))
+		}
+		if err := store.RecordDailyStorageSnapshot(ctx); err != nil {
+			log.Printf("storage snapshot failed: %v", err)
+		}
 
 		select {
 		case <-ctx.Done():
@@ -668,25 +712,52 @@ func importEventsFromJSONL(store *storage.Storage, filePath string) error {
 	count := 0
 	skipped := 0
 	failed := 0
+	rescued := 0
+	lineNum := 0
+	needsUnescape := false
 
 	log.Printf("Starting import from %s...", filePath)
 
 	for scanner.Scan() {
+		lineNum++
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 
 		var event nostr.Event
+		if needsUnescape {
+			line = bytes.ReplaceAll(line, []byte("\\\\"), []byte("\\"))
+		}
 		if err := json.Unmarshal(line, &event); err != nil {
-			log.Printf("Failed to parse event on line %d: %v", count+1, err)
-			failed++
-			continue
+			if !needsUnescape {
+				// Legacy exports may double-escape content; try a best-effort unescape.
+				fixed := bytes.ReplaceAll(line, []byte("\\\\"), []byte("\\"))
+				if err = json.Unmarshal(fixed, &event); err != nil {
+					failed++
+					if failed <= 5 || failed%10000 == 0 {
+						log.Printf("Failed to parse event on line %d: %v", lineNum, err)
+					}
+					continue
+				}
+				needsUnescape = true
+				rescued++
+			} else {
+				failed++
+				if failed <= 5 || failed%10000 == 0 {
+					log.Printf("Failed to parse event on line %d: %v", lineNum, err)
+				}
+				continue
+			}
+		} else if needsUnescape {
+			rescued++
 		}
 
 		if err := store.SaveEvent(ctx, &event); err != nil {
 			if err.Error() == "duplicate: event already exists" {
 				skipped++
+			} else if strings.Contains(err.Error(), "MDB_MAP_FULL") {
+				return fmt.Errorf("lmdb map full after %d imports (line %d): %w", count, lineNum, err)
 			} else {
 				log.Printf("Failed to save event %s: %v", event.ID, err)
 				failed++
@@ -696,7 +767,7 @@ func importEventsFromJSONL(store *storage.Storage, filePath string) error {
 
 		count++
 		if count%1000 == 0 {
-			log.Printf("Imported %d events (%d skipped, %d failed)...", count, skipped, failed)
+			log.Printf("Imported %d events (%d skipped, %d failed, %d rescued)...", count, skipped, failed, rescued)
 		}
 	}
 
@@ -704,7 +775,7 @@ func importEventsFromJSONL(store *storage.Storage, filePath string) error {
 		return fmt.Errorf("error reading file: %w", err)
 	}
 
-	log.Printf("Import complete: %d events imported, %d skipped (duplicates), %d failed", count, skipped, failed)
+	log.Printf("Import complete: %d events imported, %d skipped (duplicates), %d failed, %d rescued", count, skipped, failed, rescued)
 	return nil
 }
 

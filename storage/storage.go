@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fiatjaf/eventstore"
-	"github.com/fiatjaf/eventstore/lmdb"
+	eventstorelmdb "github.com/fiatjaf/eventstore/lmdb"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/nbd-wtf/go-nostr"
@@ -23,9 +23,16 @@ type Storage struct {
 }
 
 func New(path string, archiveEnabled bool) (*Storage, error) {
-	db := &lmdb.LMDBBackend{
-		Path:    path,
-		MapSize: 1 << 34, // 16GB
+	return newLMDBStorage(path, archiveEnabled, 0)
+}
+
+func newLMDBStorage(path string, archiveEnabled bool, extraFlags uint) (*Storage, error) {
+	db := &eventstorelmdb.LMDBBackend{
+		Path: path,
+	}
+
+	if extraFlags != 0 {
+		setLMDBExtraFlags(db, extraFlags)
 	}
 
 	if err := db.Init(); err != nil {
@@ -44,7 +51,6 @@ func New(path string, archiveEnabled bool) (*Storage, error) {
 	}
 	storage.analyticsDB = analyticsDB
 	log.Printf("Connected to analytics database (SQLite): %s", analyticsPath)
-
 
 	if archiveEnabled {
 		log.Println("Event archiving enabled for kind:3 history")
@@ -69,7 +75,6 @@ func (s *Storage) SaveEvent(ctx context.Context, evt *nostr.Event) error {
 	if err != nil {
 		return err
 	}
-
 
 	return nil
 }
@@ -136,14 +141,11 @@ func (s *Storage) CountEventsByKind(ctx context.Context, kind int) (int64, error
 // GetEventCountsByKind returns counts for all kinds stored in the database
 func (s *Storage) GetEventCountsByKind(ctx context.Context) (map[int]int64, error) {
 	result := make(map[int]int64)
-
-	ch, err := s.db.QueryEvents(ctx, nostr.Filter{})
-	if err != nil {
-		return nil, err
-	}
-
-	for evt := range ch {
+	if err := s.ScanEvents(ctx, nostr.Filter{}, 0, func(evt *nostr.Event) error {
 		result[evt.Kind]++
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return result, nil

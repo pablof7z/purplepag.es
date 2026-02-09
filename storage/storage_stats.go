@@ -12,11 +12,11 @@ import (
 )
 
 type DailyStorageStats struct {
-	Date             string
-	EventTableBytes  int64
-	EventCount       int64
-	RecordedAt       time.Time
-	BytesPerEvent    int64
+	Date            string
+	EventTableBytes int64
+	EventCount      int64
+	RecordedAt      time.Time
+	BytesPerEvent   int64
 }
 
 func (s *Storage) InitStorageStatsSchema() error {
@@ -141,8 +141,36 @@ func (s *Storage) GetDailyStorageStats(ctx context.Context, days int) ([]DailySt
 	return results, rows.Err()
 }
 
+// GetLatestStorageSnapshot returns the most recent storage snapshot, if available.
+func (s *Storage) GetLatestStorageSnapshot(ctx context.Context) (*DailyStorageStats, error) {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil, nil
+	}
+
+	var stat DailyStorageStats
+	if err := dbConn.QueryRowContext(ctx, s.rebind(`
+		SELECT date, event_table_bytes, event_count, recorded_at
+		FROM daily_storage_stats
+		ORDER BY recorded_at DESC
+		LIMIT 1
+	`)).Scan(&stat.Date, &stat.EventTableBytes, &stat.EventCount, &stat.RecordedAt); err != nil {
+		return nil, err
+	}
+
+	if stat.EventCount > 0 {
+		stat.BytesPerEvent = stat.EventTableBytes / stat.EventCount
+	}
+
+	return &stat, nil
+}
+
 // GetCurrentStorageInfo returns the current storage size and event count
 func (s *Storage) GetCurrentStorageInfo(ctx context.Context) (*DailyStorageStats, error) {
+	if latest, err := s.GetLatestStorageSnapshot(ctx); err == nil && latest != nil {
+		return latest, nil
+	}
+
 	size, err := s.GetEventTableSize(ctx)
 	if err != nil {
 		return nil, err

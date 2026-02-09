@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
-	"sort"
 	"strconv"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -22,15 +21,15 @@ func NewHandler(store *storage.Storage) *Handler {
 }
 
 type Profile struct {
-	Pubkey        string
-	Name          string
-	DisplayName   string
-	Picture       string
-	About         string
-	Nip05         string
-	FollowerCount int
+	Pubkey         string
+	Name           string
+	DisplayName    string
+	Picture        string
+	About          string
+	Nip05          string
+	FollowerCount  int
 	FollowingCount int
-	Npub          string
+	Npub           string
 }
 
 var rankingsFuncs = template.FuncMap{
@@ -59,81 +58,46 @@ func (h *Handler) HandleRankings(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	offset := (page - 1) * limit
 
-	contactLists, err := h.storage.QueryEvents(context.Background(), nostr.Filter{
-		Kinds: []int{3},
-	})
+	topPubkeys, total, err := h.storage.GetCachedFollowerCountsPage(context.Background(), limit, offset)
 	if err != nil {
-		http.Error(w, "Failed to query contact lists", http.StatusInternalServerError)
+		http.Error(w, "Failed to load rankings", http.StatusInternalServerError)
 		return
 	}
 
-	followerCounts := make(map[string]int)
-	latestContactList := make(map[string]*nostr.Event)
-
-	for _, evt := range contactLists {
-		if existing, ok := latestContactList[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
-			latestContactList[evt.PubKey] = evt
-		}
-	}
-
-	for _, evt := range latestContactList {
-		for _, tag := range evt.Tags {
-			if len(tag) >= 2 && tag[0] == "p" {
-				pubkey := tag[1]
-				followerCounts[pubkey]++
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + limit - 1) / limit
+		if offset >= total {
+			offset = 0
+			page = 1
+			topPubkeys, total, err = h.storage.GetCachedFollowerCountsPage(context.Background(), limit, offset)
+			if err != nil {
+				http.Error(w, "Failed to load rankings", http.StatusInternalServerError)
+				return
 			}
 		}
 	}
 
-	type pubkeyCount struct {
-		pubkey string
-		count  int
-	}
-
-	ranked := make([]pubkeyCount, 0, len(followerCounts))
-	for pubkey, count := range followerCounts {
-		ranked = append(ranked, pubkeyCount{pubkey, count})
-	}
-
-	sort.Slice(ranked, func(i, j int) bool {
-		return ranked[i].count > ranked[j].count
-	})
-
-	total := len(ranked)
-	totalPages := (total + limit - 1) / limit
-
-	if offset >= total {
-		offset = 0
-		page = 1
-	}
-
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-
-	topPubkeys := ranked[offset:end]
-
 	profiles := make([]Profile, 0, len(topPubkeys))
 	for _, pc := range topPubkeys {
-		profile := h.getProfile(pc.pubkey)
-		profile.FollowerCount = pc.count
-		profile.Npub = convertToNpub(pc.pubkey)
+		profile := h.getProfile(pc.Pubkey)
+		profile.FollowerCount = int(pc.FollowerCount)
+		profile.Npub = convertToNpub(pc.Pubkey)
 		profiles = append(profiles, profile)
 	}
 
 	data := struct {
-		Profiles    []Profile
-		Page        int
-		TotalPages  int
-		HasPrev     bool
-		HasNext     bool
-		Total       int
+		Profiles   []Profile
+		Page       int
+		TotalPages int
+		HasPrev    bool
+		HasNext    bool
+		Total      int
 	}{
 		Profiles:   profiles,
 		Page:       page,
 		TotalPages: totalPages,
-		HasPrev:    page > 1,
+		HasPrev:    page > 1 && totalPages > 0,
 		HasNext:    page < totalPages,
 		Total:      total,
 	}

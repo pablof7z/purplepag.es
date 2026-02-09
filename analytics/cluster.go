@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 
-	"github.com/nbd-wtf/go-nostr"
 	"github.com/pablof7z/purplepag.es/storage"
 )
 
@@ -33,13 +32,17 @@ type DetectedCluster struct {
 }
 
 func (d *ClusterDetector) Detect(ctx context.Context) ([]DetectedCluster, error) {
+	graph := d.BuildFollowGraph(ctx)
+	return d.DetectWithGraph(ctx, graph)
+}
+
+func (d *ClusterDetector) DetectWithGraph(ctx context.Context, graph FollowGraph) ([]DetectedCluster, error) {
 	log.Println("analytics: starting bot cluster detection")
 
 	if err := d.storage.DeactivateBotClusters(ctx); err != nil {
 		log.Printf("analytics: failed to deactivate old clusters: %v", err)
 	}
 
-	graph := d.buildFollowGraph(ctx)
 	if len(graph) < d.minClusterSize {
 		log.Printf("analytics: follow graph too small (%d nodes), skipping", len(graph))
 		return nil, nil
@@ -63,22 +66,13 @@ func (d *ClusterDetector) Detect(ctx context.Context) ([]DetectedCluster, error)
 	return clusters, nil
 }
 
-func (d *ClusterDetector) buildFollowGraph(ctx context.Context) FollowGraph {
+func (d *ClusterDetector) BuildFollowGraph(ctx context.Context) FollowGraph {
 	graph := make(FollowGraph)
 
-	contactLists, err := d.storage.QueryEvents(ctx, nostr.Filter{
-		Kinds: []int{3},
-	})
+	latest, err := d.storage.LatestEventsByPubkey(ctx, 3)
 	if err != nil {
-		log.Printf("analytics: failed to query contact lists: %v", err)
+		log.Printf("analytics: failed to scan contact lists: %v", err)
 		return graph
-	}
-
-	latest := make(map[string]*nostr.Event)
-	for _, evt := range contactLists {
-		if existing, ok := latest[evt.PubKey]; !ok || evt.CreatedAt > existing.CreatedAt {
-			latest[evt.PubKey] = evt
-		}
 	}
 
 	for author, evt := range latest {
@@ -200,5 +194,5 @@ func (d *ClusterDetector) filterBotClusters(graph FollowGraph, components [][]st
 }
 
 func (d *ClusterDetector) GetFollowGraph(ctx context.Context) FollowGraph {
-	return d.buildFollowGraph(ctx)
+	return d.BuildFollowGraph(ctx)
 }

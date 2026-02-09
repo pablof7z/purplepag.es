@@ -33,6 +33,10 @@ func (s *Storage) UpdateSyncStats(ctx context.Context, url string, success bool,
 }
 
 func (s *Storage) GetRelayStats(ctx context.Context) ([]DiscoveredRelay, error) {
+	if cached, err := s.GetCachedRelayStats(ctx); err == nil {
+		return cached, nil
+	}
+
 	latest, err := s.latestEventsByPubkey(ctx, 10002)
 	if err != nil {
 		return nil, err
@@ -82,6 +86,10 @@ func (s *Storage) GetDiscoveredRelayCount(ctx context.Context) (int64, error) {
 }
 
 func (s *Storage) GetFollowerCounts(ctx context.Context, minFollowers int) (map[string]int, error) {
+	if cached, err := s.GetCachedFollowerCounts(ctx, minFollowers); err == nil {
+		return cached, nil
+	}
+
 	latest, err := s.latestEventsByPubkey(ctx, 3)
 	if err != nil {
 		return nil, err
