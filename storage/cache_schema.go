@@ -77,6 +77,12 @@ func (s *Storage) InitCacheSchema() error {
 		updated_at INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_event_counts_count ON cached_event_counts(event_count DESC);
+
+	CREATE TABLE IF NOT EXISTS cached_total_count (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		total_events INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
 	`
 
 	_, err := dbConn.Exec(schema)

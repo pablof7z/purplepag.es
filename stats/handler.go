@@ -259,11 +259,8 @@ func (s *Stats) HandleStats() http.HandlerFunc {
 		uptime := s.GetUptime()
 		uptimeStr := formatDuration(uptime)
 
-		// Get total count directly (fast)
-		totalEvents, err := s.storage.GetTotalEventCount(ctx)
-		if err != nil {
-			totalEvents = 0
-		}
+		// Get cached total count (fast, never blocks)
+		totalEvents := s.storage.GetCachedTotalEventCount(ctx)
 
 		// Get by-kind stats from cache (returns empty if not populated)
 		storageStats := s.GetStorageStats(ctx)

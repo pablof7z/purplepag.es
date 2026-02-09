@@ -142,6 +142,22 @@ func (s *Storage) CountEventsByKind(ctx context.Context, kind int) (int64, error
 	return s.CountEvents(ctx, nostr.Filter{Kinds: []int{kind}})
 }
 
+// GetCachedTotalEventCount returns the cached total event count
+// Returns 0 if cache not populated yet (fast, never blocks)
+func (s *Storage) GetCachedTotalEventCount(ctx context.Context) int64 {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return 0
+	}
+
+	var count int64
+	err := dbConn.QueryRowContext(ctx, "SELECT total_events FROM cached_total_count WHERE id = 1").Scan(&count)
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
 // GetEventCountsByKind returns counts for all kinds stored in the database
 // Uses cached counts from SQLite only - returns empty if cache not populated
 func (s *Storage) GetEventCountsByKind(ctx context.Context) (map[int]int64, error) {

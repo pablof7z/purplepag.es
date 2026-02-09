@@ -654,10 +654,20 @@ func (s *Storage) refreshEventCountsCache(ctx context.Context) error {
 	}
 	defer stmt.Close()
 
+	var totalCount int64
 	for kind, count := range kindCounts {
+		totalCount += count
 		if _, err := stmt.ExecContext(ctx, kind, count, now); err != nil {
 			return err
 		}
+	}
+
+	// Also cache the total count for fast access
+	if _, err := tx.ExecContext(ctx, `
+		INSERT OR REPLACE INTO cached_total_count (id, total_events, updated_at)
+		VALUES (1, ?, ?)
+	`, totalCount, now); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
