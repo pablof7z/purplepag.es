@@ -143,7 +143,35 @@ func (s *Storage) CountEventsByKind(ctx context.Context, kind int) (int64, error
 }
 
 // GetEventCountsByKind returns counts for all kinds stored in the database
+// Uses cached counts from SQLite if available, otherwise scans LMDB
 func (s *Storage) GetEventCountsByKind(ctx context.Context) (map[int]int64, error) {
+	dbConn := s.getDBConn()
+
+	// Try to get from cache first
+	if dbConn != nil {
+		rows, err := dbConn.QueryContext(ctx, "SELECT kind, event_count FROM cached_event_counts")
+		if err == nil {
+			defer rows.Close()
+			result := make(map[int]int64)
+			for rows.Next() {
+				var kind int
+				var count int64
+				if err := rows.Scan(&kind, &count); err != nil {
+					return nil, err
+				}
+				result[kind] = count
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			// If we have cached data, use it
+			if len(result) > 0 {
+				return result, nil
+			}
+		}
+	}
+
+	// Fallback: scan LMDB (slow!)
 	result := make(map[int]int64)
 	if err := s.ScanEvents(ctx, nostr.Filter{}, 0, func(evt *nostr.Event) error {
 		result[evt.Kind]++

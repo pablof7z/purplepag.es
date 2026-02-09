@@ -216,6 +216,11 @@ func (s *Storage) RefreshDerivedStats(ctx context.Context) error {
 		return err
 	}
 
+	// Cache event counts by kind
+	if err := s.refreshEventCountsCache(ctx); err != nil {
+		return fmt.Errorf("refresh event counts cache: %w", err)
+	}
+
 	return nil
 }
 
@@ -610,4 +615,54 @@ func rankFollowerTrends(trends []FollowerTrend, limit int) (rising []FollowerTre
 	}
 
 	return rising, falling
+}
+
+// refreshEventCountsCache scans all events and caches counts by kind
+func (s *Storage) refreshEventCountsCache(ctx context.Context) error {
+	dbConn := s.getDBConn()
+	if dbConn == nil {
+		return nil
+	}
+
+	// Get event counts by kind from LMDB
+	kindCounts, err := s.GetEventCountsByKind(ctx)
+	if err != nil {
+		return fmt.Errorf("get event counts by kind: %w", err)
+	}
+
+	now := time.Now().Unix()
+
+	// Begin transaction
+	tx, err := dbConn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Clear old cached counts
+	if _, err := tx.ExecContext(ctx, "DELETE FROM cached_event_counts"); err != nil {
+		return err
+	}
+
+	// Insert new counts
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO cached_event_counts (kind, event_count, updated_at)
+		VALUES (?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for kind, count := range kindCounts {
+		if _, err := stmt.ExecContext(ctx, kind, count, now); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
 }

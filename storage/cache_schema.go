@@ -70,6 +70,13 @@ func (s *Storage) InitCacheSchema() error {
 		pubkey_count INTEGER NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_relay_stats_count ON cached_relay_stats(pubkey_count DESC);
+
+	CREATE TABLE IF NOT EXISTS cached_event_counts (
+		kind INTEGER PRIMARY KEY,
+		event_count INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_event_counts_count ON cached_event_counts(event_count DESC);
 	`
 
 	_, err := dbConn.Exec(schema)
