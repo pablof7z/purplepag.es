@@ -158,6 +158,28 @@ func main() {
 		return false, ""
 	})
 
+	relay.OverwriteFilter = append(relay.OverwriteFilter, func(ctx context.Context, filter *nostr.Filter) {
+		i := 0
+		for {
+			length := len(filter.Kinds)
+			if i >= length {
+				break
+			}
+
+			if !cfg.IsKindAllowed(filter.Kinds[i]) {
+				// swap-delete
+				filter.Kinds[i] = filter.Kinds[length-1]
+				filter.Kinds = filter.Kinds[0 : length-1]
+
+				// stay in this index
+				continue
+			}
+
+			// see next
+			i++
+		}
+	})
+
 	relay.RejectFilter = append(relay.RejectFilter, func(ctx context.Context, filter nostr.Filter) (bool, string) {
 		if filter.Limit > cfg.Limits.MaxLimit {
 			return true, fmt.Sprintf("limit too high: %d (max %d)", filter.Limit, cfg.Limits.MaxLimit)
